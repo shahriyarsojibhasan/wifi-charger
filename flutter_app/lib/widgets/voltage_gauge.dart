@@ -1,7 +1,7 @@
-import 'dart:math';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
-class VoltageGauge extends StatelessWidget {
+class VoltageGauge extends StatefulWidget {
   final double voltage;
   final double lowCut;
   final double highCut;
@@ -14,315 +14,332 @@ class VoltageGauge extends StatelessWidget {
     required this.lowCut,
     required this.highCut,
     required this.isCharging,
-    this.isSensorInstalled = false,
+    required this.isSensorInstalled,
   });
 
   @override
+  State<VoltageGauge> createState() => _VoltageGaugeState();
+}
+
+class _VoltageGaugeState extends State<VoltageGauge>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  Color _getVoltageColor(double voltage) {
+    if (!widget.isSensorInstalled) return const Color(0xFF7C4DFF);
+    final range = widget.highCut - widget.lowCut;
+    if (range <= 0) return const Color(0xFF00E5FF);
+    final pct = (voltage - widget.lowCut) / range;
+    if (pct <= 0.2) return const Color(0xFFFF5252);
+    if (pct <= 0.5) return const Color(0xFFFFAB40);
+    return const Color(0xFF00E676);
+  }
+
+  double _getPercent() {
+    if (!widget.isSensorInstalled) return 0.6;
+    final range = widget.highCut - widget.lowCut;
+    if (range <= 0) return 0.0;
+    return ((widget.voltage - widget.lowCut) / range).clamp(0.0, 1.0);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    Color statusColor;
-    String statusText;
-    IconData statusIcon;
+    final color = _getVoltageColor(widget.voltage);
+    final percent = _getPercent();
 
-    if (isCharging) {
-      statusColor = const Color(0xFF00E676);
-      statusText = 'CHARGING ACTIVE';
-      statusIcon = Icons.bolt;
-    } else if (!isSensorInstalled) {
-      statusColor = const Color(0xFFFFD600);
-      statusText = 'TIMER / SCHEDULE MODE';
-      statusIcon = Icons.timer;
-    } else if (voltage >= highCut) {
-      statusColor = const Color(0xFF00B0FF);
-      statusText = 'FULL / HIGH CUTOFF';
-      statusIcon = Icons.check_circle_outline;
-    } else if (voltage <= lowCut) {
-      statusColor = const Color(0xFFFF5252);
-      statusText = 'LOW BATTERY';
-      statusIcon = Icons.battery_alert;
-    } else {
-      statusColor = const Color(0xFFFFD600);
-      statusText = 'STANDBY / IDLE';
-      statusIcon = Icons.battery_saver;
-    }
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isMobile = constraints.maxWidth < 450;
-        final gaugeSize = isMobile ? 160.0 : 190.0;
-
-        return Container(
-          padding: EdgeInsets.all(isMobile ? 16 : 22),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(24),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                const Color(0xFF1E2640).withValues(alpha: 0.85),
-                const Color(0xFF111728).withValues(alpha: 0.95),
-              ],
-            ),
-            border: Border.all(
-              color: statusColor.withValues(alpha: 0.35),
-              width: 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: statusColor.withValues(alpha: 0.12),
-                blurRadius: 25,
-                spreadRadius: 2,
-              ),
-            ],
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1E2640).withValues(alpha: 0.9),
+            const Color(0xFF0E1422).withValues(alpha: 0.95),
+          ],
+        ),
+        border: Border.all(
+          color: color.withValues(alpha: 0.25),
+          width: 1.3,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.12),
+            blurRadius: 24,
+            offset: const Offset(0, 8),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+        ],
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(7),
-                        decoration: BoxDecoration(
-                          color: statusColor.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Icon(Icons.speed, color: statusColor, size: 18),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        isSensorInstalled ? 'Battery Voltage' : 'Current Hardware Phase',
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    padding: const EdgeInsets.all(7),
                     decoration: BoxDecoration(
-                      color: statusColor.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: statusColor.withValues(alpha: 0.4)),
+                      color: color.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(statusIcon, color: statusColor, size: 13),
-                        const SizedBox(width: 4),
-                        Text(
-                          statusText,
-                          style: TextStyle(
-                            color: statusColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 10,
-                            letterSpacing: 0.4,
-                          ),
-                        ),
-                      ],
+                    child: Icon(
+                      Icons.battery_charging_full,
+                      color: color,
+                      size: 17,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Battery Status',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 18),
-
-              SizedBox(
-                height: gaugeSize,
-                width: gaugeSize,
-                child: CustomPaint(
-                  painter: _GaugePainter(
-                    voltage: isSensorInstalled ? voltage : 12.0,
-                    lowCut: lowCut,
-                    highCut: highCut,
-                    isCharging: isCharging,
-                  ),
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (isSensorInstalled) ...[
+              if (widget.isCharging)
+                AnimatedBuilder(
+                  animation: _pulseAnimation,
+                  builder: (context, _) => Opacity(
+                    opacity: _pulseAnimation.value,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E676).withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                            color: const Color(0xFF00E676).withValues(alpha: 0.5)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.bolt, color: Color(0xFF00E676), size: 13),
+                          SizedBox(width: 4),
                           Text(
-                            voltage.toStringAsFixed(2),
+                            'CHARGING',
                             style: TextStyle(
-                              fontSize: isMobile ? 36 : 42,
-                              fontWeight: FontWeight.w900,
-                              color: Colors.white,
-                              letterSpacing: -1,
-                            ),
-                          ),
-                          const Text(
-                            'VOLTS DC',
-                            style: TextStyle(
+                              color: Color(0xFF00E676),
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
-                              color: Colors.white38,
-                              letterSpacing: 1.2,
-                            ),
-                          ),
-                        ] else ...[
-                          Icon(
-                            isCharging ? Icons.power : Icons.power_off,
-                            color: isCharging ? const Color(0xFF00E676) : Colors.white38,
-                            size: isMobile ? 36 : 44,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            isCharging ? 'CHARGER ON' : 'CHARGER OFF',
-                            style: TextStyle(
-                              fontSize: isMobile ? 12 : 14,
-                              fontWeight: FontWeight.bold,
-                              color: isCharging ? const Color(0xFF00E676) : Colors.white60,
-                            ),
-                          ),
-                          const Text(
-                            'RELAY STATUS',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white30,
-                              letterSpacing: 1.0,
                             ),
                           ),
                         ],
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              if (isSensorInstalled)
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildThresholdBadge('Low Cut', '${lowCut.toStringAsFixed(1)}V', const Color(0xFFFF5252)),
-                    Container(width: 1, height: 24, color: Colors.white12),
-                    _buildThresholdBadge('Safe Range', '${lowCut.toStringAsFixed(1)}V - ${highCut.toStringAsFixed(1)}V', const Color(0xFFFFD600)),
-                    Container(width: 1, height: 24, color: Colors.white12),
-                    _buildThresholdBadge('High Cut', '${highCut.toStringAsFixed(1)}V', const Color(0xFF00E676)),
-                  ],
-                )
-              else
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.04),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.info_outline, color: Color(0xFF00E5FF), size: 14),
-                      SizedBox(width: 6),
-                      Text(
-                        'Phase 1: Relay & 3 AM Schedule active. Sensor header ready.',
-                        style: TextStyle(color: Colors.white70, fontSize: 11),
                       ),
-                    ],
+                    ),
                   ),
                 ),
             ],
           ),
-        );
-      },
+          const SizedBox(height: 20),
+
+          // Arc gauge
+          SizedBox(
+            height: 160,
+            child: CustomPaint(
+              painter: _ArcGaugePainter(
+                percent: percent,
+                color: color,
+                isCharging: widget.isCharging,
+              ),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(height: 20),
+                    if (!widget.isSensorInstalled)
+                      Column(
+                        children: [
+                          Icon(Icons.sensors_off,
+                              color: Colors.white38, size: 28),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Sensor not\ninstalled',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                color: Colors.white38,
+                                fontSize: 11,
+                                height: 1.4),
+                          ),
+                        ],
+                      )
+                    else ...[
+                      TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0, end: widget.voltage),
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOut,
+                        builder: (context, v, _) => Text(
+                          '${v.toStringAsFixed(2)}V',
+                          style: TextStyle(
+                            color: color,
+                            fontSize: 30,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -1,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${(percent * 100).toStringAsFixed(0)}% charge',
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 12),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 14),
+
+          // Cut-off info row
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _ThresholdChip(
+                label: 'Low Cut',
+                value: '${widget.lowCut.toStringAsFixed(1)}V',
+                color: const Color(0xFFFF5252),
+              ),
+              Container(
+                width: 1,
+                height: 30,
+                color: Colors.white12,
+              ),
+              _ThresholdChip(
+                label: 'High Cut',
+                value: '${widget.highCut.toStringAsFixed(1)}V',
+                color: const Color(0xFF00E676),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
+}
 
-  Widget _buildThresholdBadge(String label, String value, Color color) {
+class _ThresholdChip extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _ThresholdChip(
+      {required this.label, required this.value, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
       children: [
-        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 10)),
-        const SizedBox(height: 2),
-        Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)),
+        Text(label,
+            style: const TextStyle(color: Colors.white38, fontSize: 10)),
+        const SizedBox(height: 3),
+        Text(
+          value,
+          style: TextStyle(
+            color: color,
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+          ),
+        ),
       ],
     );
   }
 }
 
-class _GaugePainter extends CustomPainter {
-  final double voltage;
-  final double lowCut;
-  final double highCut;
+class _ArcGaugePainter extends CustomPainter {
+  final double percent;
+  final Color color;
   final bool isCharging;
 
-  _GaugePainter({
-    required this.voltage,
-    required this.lowCut,
-    required this.highCut,
-    required this.isCharging,
-  });
+  _ArcGaugePainter(
+      {required this.percent,
+      required this.color,
+      required this.isCharging});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width / 2 - 10;
+    final center = Offset(size.width / 2, size.height * 0.85);
+    final radius = size.width * 0.42;
+    const startAngle = math.pi;
+    const sweepAngle = math.pi;
 
-    const startAngle = 135 * (pi / 180);
-    const sweepTotal = 270 * (pi / 180);
-
+    // Background arc
     final bgPaint = Paint()
-      ..color = const Color(0xFF222B45)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 12
-      ..strokeCap = StrokeCap.round;
-
+      ..strokeWidth = 14
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white.withValues(alpha: 0.07);
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: radius),
       startAngle,
-      sweepTotal,
+      sweepAngle,
       false,
       bgPaint,
     );
 
-    const minV = 9.0;
-    const maxV = 15.5;
-    final clampedV = voltage.clamp(minV, maxV);
-    final ratio = (clampedV - minV) / (maxV - minV);
-    final activeSweep = sweepTotal * ratio;
+    // Colored fill arc
+    if (percent > 0) {
+      final fgPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 14
+        ..strokeCap = StrokeCap.round
+        ..shader = SweepGradient(
+          startAngle: startAngle,
+          endAngle: startAngle + sweepAngle * percent,
+          colors: [color.withValues(alpha: 0.5), color],
+          transform: const GradientRotation(math.pi),
+        ).createShader(
+            Rect.fromCircle(center: center, radius: radius));
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        startAngle,
+        sweepAngle * percent,
+        false,
+        fgPaint,
+      );
 
-    Color progressColor;
-    if (isCharging) {
-      progressColor = const Color(0xFF00E676);
-    } else if (voltage >= highCut) {
-      progressColor = const Color(0xFF00B0FF);
-    } else if (voltage <= lowCut) {
-      progressColor = const Color(0xFFFF5252);
-    } else {
-      progressColor = const Color(0xFFFFD600);
+      // Glow dot at needle tip
+      final tipAngle = startAngle + sweepAngle * percent;
+      final tipX = center.dx + radius * math.cos(tipAngle);
+      final tipY = center.dy + radius * math.sin(tipAngle);
+      final dotPaint = Paint()..color = color;
+      canvas.drawCircle(Offset(tipX, tipY), 7, dotPaint);
+
+      if (isCharging) {
+        final glowPaint = Paint()
+          ..color = color.withValues(alpha: 0.3)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+        canvas.drawCircle(Offset(tipX, tipY), 12, glowPaint);
+      }
     }
-
-    final activePaint = Paint()
-      ..shader = SweepGradient(
-        colors: [
-          const Color(0xFFFF5252),
-          const Color(0xFFFFD600),
-          const Color(0xFF00E676),
-          progressColor,
-        ],
-        stops: const [0.0, 0.45, 0.75, 1.0],
-        transform: GradientRotation(startAngle),
-      ).createShader(Rect.fromCircle(center: center, radius: radius))
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 12
-      ..strokeCap = StrokeCap.round;
-
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      startAngle,
-      activeSweep,
-      false,
-      activePaint,
-    );
   }
 
   @override
-  bool shouldRepaint(covariant _GaugePainter oldDelegate) {
-    return oldDelegate.voltage != voltage ||
-        oldDelegate.isCharging != isCharging ||
-        oldDelegate.lowCut != lowCut ||
-        oldDelegate.highCut != highCut;
-  }
+  bool shouldRepaint(_ArcGaugePainter old) =>
+      old.percent != percent || old.color != color || old.isCharging != isCharging;
 }

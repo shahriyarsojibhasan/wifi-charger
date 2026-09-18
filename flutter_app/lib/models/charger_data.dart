@@ -4,6 +4,7 @@ class ChargerData {
   final bool autoMode;
   final bool isScheduleWindow;
   final int currentSessionSeconds;
+  final int manualOnSeconds;
   final int todaySeconds;
   final int totalSeconds;
   final double estimatedKwh;
@@ -19,12 +20,13 @@ class ChargerData {
   final double voltageCalibration;
   final int lastUpdated;
 
-  ChargerData({
+  const ChargerData({
     this.batteryVoltage = 12.0,
     this.relayState = false,
     this.autoMode = true,
     this.isScheduleWindow = false,
     this.currentSessionSeconds = 0,
+    this.manualOnSeconds = 0,
     this.todaySeconds = 0,
     this.totalSeconds = 0,
     this.estimatedKwh = 0.0,
@@ -41,11 +43,67 @@ class ChargerData {
     this.lastUpdated = 0,
   });
 
+  ChargerData copyWith({
+    double? batteryVoltage,
+    bool? relayState,
+    bool? autoMode,
+    bool? isScheduleWindow,
+    int? currentSessionSeconds,
+    int? manualOnSeconds,
+    int? todaySeconds,
+    int? totalSeconds,
+    double? estimatedKwh,
+    double? estimatedBdt,
+    double? lowCut,
+    double? highCut,
+    double? chargerWatt,
+    double? kwhRateBdt,
+    int? chargeStartHour,
+    int? chargeStopHour,
+    bool? scheduleEnabled,
+    bool? voltageSensorInstalled,
+    double? voltageCalibration,
+    int? lastUpdated,
+  }) {
+    return ChargerData(
+      batteryVoltage: batteryVoltage ?? this.batteryVoltage,
+      relayState: relayState ?? this.relayState,
+      autoMode: autoMode ?? this.autoMode,
+      isScheduleWindow: isScheduleWindow ?? this.isScheduleWindow,
+      currentSessionSeconds: currentSessionSeconds ?? this.currentSessionSeconds,
+      manualOnSeconds: manualOnSeconds ?? this.manualOnSeconds,
+      todaySeconds: todaySeconds ?? this.todaySeconds,
+      totalSeconds: totalSeconds ?? this.totalSeconds,
+      estimatedKwh: estimatedKwh ?? this.estimatedKwh,
+      estimatedBdt: estimatedBdt ?? this.estimatedBdt,
+      lowCut: lowCut ?? this.lowCut,
+      highCut: highCut ?? this.highCut,
+      chargerWatt: chargerWatt ?? this.chargerWatt,
+      kwhRateBdt: kwhRateBdt ?? this.kwhRateBdt,
+      chargeStartHour: chargeStartHour ?? this.chargeStartHour,
+      chargeStopHour: chargeStopHour ?? this.chargeStopHour,
+      scheduleEnabled: scheduleEnabled ?? this.scheduleEnabled,
+      voltageSensorInstalled: voltageSensorInstalled ?? this.voltageSensorInstalled,
+      voltageCalibration: voltageCalibration ?? this.voltageCalibration,
+      lastUpdated: lastUpdated ?? this.lastUpdated,
+    );
+  }
+
   factory ChargerData.fromJson(Map<String, dynamic> json) {
-    final telemetry = (json['telemetry'] is Map) ? Map<String, dynamic>.from(json['telemetry']) : <String, dynamic>{};
-    final stats = (json['stats'] is Map) ? Map<String, dynamic>.from(json['stats']) : <String, dynamic>{};
-    final control = (json['control'] is Map) ? Map<String, dynamic>.from(json['control']) : (json['commands'] is Map ? Map<String, dynamic>.from(json['commands']) : <String, dynamic>{});
-    final config = (json['config'] is Map) ? Map<String, dynamic>.from(json['config']) : <String, dynamic>{};
+    final telemetry = (json['telemetry'] is Map)
+        ? Map<String, dynamic>.from(json['telemetry'] as Map)
+        : <String, dynamic>{};
+    final stats = (json['stats'] is Map)
+        ? Map<String, dynamic>.from(json['stats'] as Map)
+        : <String, dynamic>{};
+    final control = (json['control'] is Map)
+        ? Map<String, dynamic>.from(json['control'] as Map)
+        : (json['commands'] is Map
+            ? Map<String, dynamic>.from(json['commands'] as Map)
+            : <String, dynamic>{});
+    final config = (json['config'] is Map)
+        ? Map<String, dynamic>.from(json['config'] as Map)
+        : <String, dynamic>{};
 
     double toDouble(dynamic val, double fallback) {
       if (val == null) return fallback;
@@ -71,6 +129,7 @@ class ChargerData {
       autoMode: toBool(control['auto_mode'] ?? telemetry['auto_mode'], true),
       isScheduleWindow: toBool(telemetry['is_schedule_window'], false),
       currentSessionSeconds: toInt(stats['current_session_seconds'], 0),
+      manualOnSeconds: toInt(stats['manual_on_seconds'], 0),
       todaySeconds: toInt(stats['today_seconds'], 0),
       totalSeconds: toInt(stats['total_seconds'], 0),
       estimatedKwh: toDouble(stats['estimated_kwh'], 0.0),
@@ -82,13 +141,16 @@ class ChargerData {
       chargeStartHour: toInt(config['charge_start_hour'], 3),
       chargeStopHour: toInt(config['charge_stop_hour'], 4),
       scheduleEnabled: toBool(config['schedule_enabled'], true),
-      voltageSensorInstalled: toBool(telemetry['voltage_sensor_installed'] ?? config['voltage_sensor_installed'], false),
+      voltageSensorInstalled: toBool(
+          telemetry['voltage_sensor_installed'] ??
+              config['voltage_sensor_installed'],
+          false),
       voltageCalibration: toDouble(config['voltage_calibration'], 1.00),
       lastUpdated: toInt(telemetry['last_updated'], 0),
     );
   }
 
-  String formatDuration(int totalSecs) {
+  static String formatDuration(int totalSecs) {
     final hours = totalSecs ~/ 3600;
     final minutes = (totalSecs % 3600) ~/ 60;
     final seconds = totalSecs % 60;
