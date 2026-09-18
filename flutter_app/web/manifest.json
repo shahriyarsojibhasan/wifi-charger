@@ -1,13 +1,14 @@
 {
-    "name": "flutter_app",
-    "short_name": "flutter_app",
+    "name": "VoltPulse - Smart WiFi Charger",
+    "short_name": "VoltPulse",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#080C18",
+    "theme_color": "#080C18",
+    "description": "Enterprise 12V Battery Charger Automation, Real-time Cloud Sync & Bill Analytics",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
+    "categories": ["utilities", "productivity"],
     "icons": [
         {
             "src": "icons/Icon-192.png",

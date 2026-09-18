@@ -16,12 +16,20 @@ class ChargerData {
   final int chargeStartHour;
   final int chargeStopHour;
   final bool scheduleEnabled;
+  final int sensorMode; // 0: None, 1: 100k/10k Divider, 2: 0-25V Sensor Module
   final bool voltageSensorInstalled;
   final double voltageCalibration;
   final int lastUpdated;
+  final bool timerActive;
+  final int timerRemainingSeconds;
+  final int uptimeSecs;
+  final int heartbeatSeq;
+  final int epochTime;
+  final String deviceIp;
+  final int wifiRssi;
 
   const ChargerData({
-    this.batteryVoltage = 12.0,
+    this.batteryVoltage = 0.0,
     this.relayState = false,
     this.autoMode = true,
     this.isScheduleWindow = false,
@@ -38,10 +46,20 @@ class ChargerData {
     this.chargeStartHour = 3,
     this.chargeStopHour = 4,
     this.scheduleEnabled = true,
+    this.sensorMode = 0,
     this.voltageSensorInstalled = false,
     this.voltageCalibration = 1.00,
     this.lastUpdated = 0,
+    this.timerActive = false,
+    this.timerRemainingSeconds = 0,
+    this.uptimeSecs = 0,
+    this.heartbeatSeq = 0,
+    this.epochTime = 0,
+    this.deviceIp = '192.168.4.1',
+    this.wifiRssi = 0,
   });
+
+  double get hourlyCostBdt => (chargerWatt / 1000.0) * kwhRateBdt;
 
   ChargerData copyWith({
     double? batteryVoltage,
@@ -61,9 +79,17 @@ class ChargerData {
     int? chargeStartHour,
     int? chargeStopHour,
     bool? scheduleEnabled,
+    int? sensorMode,
     bool? voltageSensorInstalled,
     double? voltageCalibration,
     int? lastUpdated,
+    bool? timerActive,
+    int? timerRemainingSeconds,
+    int? uptimeSecs,
+    int? heartbeatSeq,
+    int? epochTime,
+    String? deviceIp,
+    int? wifiRssi,
   }) {
     return ChargerData(
       batteryVoltage: batteryVoltage ?? this.batteryVoltage,
@@ -83,9 +109,17 @@ class ChargerData {
       chargeStartHour: chargeStartHour ?? this.chargeStartHour,
       chargeStopHour: chargeStopHour ?? this.chargeStopHour,
       scheduleEnabled: scheduleEnabled ?? this.scheduleEnabled,
+      sensorMode: sensorMode ?? this.sensorMode,
       voltageSensorInstalled: voltageSensorInstalled ?? this.voltageSensorInstalled,
       voltageCalibration: voltageCalibration ?? this.voltageCalibration,
       lastUpdated: lastUpdated ?? this.lastUpdated,
+      timerActive: timerActive ?? this.timerActive,
+      timerRemainingSeconds: timerRemainingSeconds ?? this.timerRemainingSeconds,
+      uptimeSecs: uptimeSecs ?? this.uptimeSecs,
+      heartbeatSeq: heartbeatSeq ?? this.heartbeatSeq,
+      epochTime: epochTime ?? this.epochTime,
+      deviceIp: deviceIp ?? this.deviceIp,
+      wifiRssi: wifiRssi ?? this.wifiRssi,
     );
   }
 
@@ -123,8 +157,11 @@ class ChargerData {
       return val.toString().toLowerCase() == 'true' || val == 1;
     }
 
+    final sMode = toInt(telemetry['sensor_mode'] ?? config['sensor_mode'], 0);
+    final sensorInstalled = sMode > 0 || toBool(telemetry['voltage_sensor_installed'] ?? config['voltage_sensor_installed'], false);
+
     return ChargerData(
-      batteryVoltage: toDouble(telemetry['battery_voltage'], 12.0),
+      batteryVoltage: toDouble(telemetry['battery_voltage'], 0.0),
       relayState: toBool(telemetry['relay_state'], false),
       autoMode: toBool(control['auto_mode'] ?? telemetry['auto_mode'], true),
       isScheduleWindow: toBool(telemetry['is_schedule_window'], false),
@@ -141,19 +178,42 @@ class ChargerData {
       chargeStartHour: toInt(config['charge_start_hour'], 3),
       chargeStopHour: toInt(config['charge_stop_hour'], 4),
       scheduleEnabled: toBool(config['schedule_enabled'], true),
-      voltageSensorInstalled: toBool(
-          telemetry['voltage_sensor_installed'] ??
-              config['voltage_sensor_installed'],
-          false),
+      sensorMode: sMode,
+      voltageSensorInstalled: sensorInstalled,
       voltageCalibration: toDouble(config['voltage_calibration'], 1.00),
       lastUpdated: toInt(telemetry['last_updated'], 0),
+      timerActive: toBool(telemetry['timer_active'], false),
+      timerRemainingSeconds: toInt(telemetry['timer_remaining_seconds'], 0),
+      uptimeSecs: toInt(telemetry['uptime_secs'] ?? telemetry['last_updated'], 0),
+      heartbeatSeq: toInt(telemetry['heartbeat_seq'], 0),
+      epochTime: toInt(telemetry['epoch_time'], 0),
+      deviceIp: telemetry['device_ip']?.toString() ?? '192.168.4.1',
+      wifiRssi: toInt(telemetry['wifi_rssi'], 0),
     );
   }
 
-  static String formatDuration(int totalSecs) {
+  static String formatDuration(int totalSecs, {bool isBn = false}) {
     final hours = totalSecs ~/ 3600;
     final minutes = (totalSecs % 3600) ~/ 60;
     final seconds = totalSecs % 60;
+
+    if (isBn) {
+      String toBn(int n) {
+        const enDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+        const bnDigits = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+        String s = n.toString();
+        for (int i = 0; i < 10; i++) {
+          s = s.replaceAll(enDigits[i], bnDigits[i]);
+        }
+        return s;
+      }
+
+      if (hours > 0) {
+        return '${toBn(hours)} ঘণ্টা ${toBn(minutes)} মি.';
+      }
+      return '${toBn(minutes)} মি. ${toBn(seconds)} সে.';
+    }
+
     if (hours > 0) {
       return '${hours}h ${minutes.toString().padLeft(2, '0')}m';
     }

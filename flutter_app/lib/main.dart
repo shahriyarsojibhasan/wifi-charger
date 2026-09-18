@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'services/firebase_service.dart';
 import 'services/toast_service.dart';
+import 'services/localization_service.dart';
+import 'services/pwa_service.dart';
 import 'widgets/voltage_gauge.dart';
 import 'widgets/stat_card.dart';
 import 'widgets/control_panel.dart';
@@ -14,13 +16,34 @@ void main() {
   runApp(const WifiChargerApp());
 }
 
-class WifiChargerApp extends StatelessWidget {
+class WifiChargerApp extends StatefulWidget {
   const WifiChargerApp({super.key});
+
+  @override
+  State<WifiChargerApp> createState() => _WifiChargerAppState();
+}
+
+class _WifiChargerAppState extends State<WifiChargerApp> {
+  @override
+  void initState() {
+    super.initState();
+    LocalizationService.instance.addListener(_rebuild);
+  }
+
+  void _rebuild() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    LocalizationService.instance.removeListener(_rebuild);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Smart 12V Battery Charger',
+      title: 'VoltPulse • Smart 12V Battery Charger',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -40,7 +63,7 @@ class WifiChargerApp extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TOAST OVERLAY — wraps entire app, listens to ToastService stream
+// TOAST OVERLAY
 // ─────────────────────────────────────────────────────────────────────────────
 class ToastOverlay extends StatefulWidget {
   final Widget child;
@@ -170,7 +193,12 @@ class _ToastWidgetState extends State<_ToastWidget>
               children: [
                 Icon(_icon(), color: Colors.white, size: 20),
                 const SizedBox(width: 10),
-                Expanded(child: Text(widget.entry.msg.message, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600))),
+                Expanded(
+                  child: Text(
+                    widget.entry.msg.message,
+                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
               ],
             ),
           ),
@@ -198,6 +226,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.initState();
     _service = FirebaseService();
     _service.addListener(_onUpdate);
+    LocalizationService.instance.addListener(_onUpdate);
   }
 
   void _onUpdate() {
@@ -207,23 +236,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     _service.removeListener(_onUpdate);
+    LocalizationService.instance.removeListener(_onUpdate);
     _service.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final loc = LocalizationService.instance;
+    final isBn = loc.isBengali;
     final data = _service.data;
-    final isConnected = _service.isConnected;
+    final isAlive = _service.isNodeMcuAlive;
+    final isCloud = _service.isCloudConnected;
     final isRelayOn = _service.displayRelayState;
     final waiting = _service.waitingForFirstData;
 
     return Scaffold(
       backgroundColor: const Color(0xFF080C18),
-      appBar: _buildAppBar(isConnected, waiting),
+      appBar: _buildAppBar(isCloud, isAlive, waiting, loc),
       body: Stack(
         children: [
-          // Ambient background gradient
+          // Ambient background glow
           Positioned.fill(
             child: DecoratedBox(
               decoration: BoxDecoration(
@@ -252,11 +285,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // ── CONNECTIVITY BANNER ──
-                        if (!isConnected) _buildOfflineBanner(),
-                        if (waiting && isConnected) _buildWaitingBanner(),
+                        // ── CONNECTIVITY BANNERS ──
+                        if (!isCloud)
+                          _buildCloudOfflineBanner(loc)
+                        else if (!isAlive && !waiting)
+                          _buildNodeMcuOfflineBanner(loc),
 
-                        // ── MAIN CONTENT ──
+                        if (waiting && isCloud)
+                          _buildWaitingBanner(loc),
+
+                        // ── MAIN CONTENT (GAUGE + CONTROLLER) ──
                         if (isWide)
                           IntrinsicHeight(
                             child: Row(
@@ -269,7 +307,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     lowCut: data.lowCut,
                                     highCut: data.highCut,
                                     isCharging: isRelayOn,
-                                    isSensorInstalled: data.voltageSensorInstalled,
+                                    sensorMode: _service.displaySensorMode,
+                                    sessionSeconds: data.currentSessionSeconds,
                                   ),
                                 ),
                                 const SizedBox(width: 20),
@@ -286,7 +325,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             lowCut: data.lowCut,
                             highCut: data.highCut,
                             isCharging: isRelayOn,
-                            isSensorInstalled: data.voltageSensorInstalled,
+                            sensorMode: _service.displaySensorMode,
+                            sessionSeconds: data.currentSessionSeconds,
                           ),
                           const SizedBox(height: 14),
                           ControlPanel(service: _service),
@@ -298,12 +338,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Row(
+                            Row(
                               children: [
-                                Icon(Icons.analytics_outlined, color: Color(0xFF00E5FF), size: 18),
-                                SizedBox(width: 8),
-                                Text('Charging Statistics & Cost',
-                                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                                const Icon(Icons.analytics_outlined, color: Color(0xFF00E5FF), size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  loc.tr('stats_title'),
+                                  style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                ),
                               ],
                             ),
                             Container(
@@ -313,8 +355,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
-                                'Tariff: ${data.kwhRateBdt.toStringAsFixed(1)} BDT/kWh',
-                                style: const TextStyle(color: Colors.white54, fontSize: 10),
+                                '${loc.tr('tariff_label')}: ${data.kwhRateBdt.toStringAsFixed(1)} Tk/kWh',
+                                style: const TextStyle(color: Colors.white54, fontSize: 11),
                               ),
                             ),
                           ],
@@ -326,39 +368,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           crossAxisCount: isWide ? 4 : (constraints.maxWidth > 550 ? 2 : 2),
                           crossAxisSpacing: 12,
                           mainAxisSpacing: 12,
-                          childAspectRatio: isWide ? 1.35 : 1.5,
+                          childAspectRatio: isWide ? 1.35 : 1.45,
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
                           children: [
                             StatCard(
-                              title: 'Current Session',
-                              value: ChargerData.formatDuration(data.currentSessionSeconds),
-                              subtitle: isRelayOn ? 'Active Charging' : 'Charger Standby',
+                              title: loc.tr('current_session'),
+                              value: ChargerData.formatDuration(data.currentSessionSeconds, isBn: isBn),
+                              subtitle: isRelayOn ? loc.tr('active_charging') : loc.tr('standby'),
                               icon: Icons.timer_outlined,
                               accentColor: const Color(0xFF00E5FF),
                             ),
                             StatCard(
-                              title: "Today's Runtime",
-                              value: ChargerData.formatDuration(data.todaySeconds),
-                              subtitle: 'Daily total charging',
+                              title: loc.tr('today_runtime'),
+                              value: ChargerData.formatDuration(data.todaySeconds, isBn: isBn),
+                              subtitle: loc.tr('daily_total'),
                               icon: Icons.today_outlined,
                               accentColor: const Color(0xFF7C4DFF),
                             ),
                             StatCard(
-                              title: 'Lifetime Hours',
-                              value: '${(data.totalSeconds / 3600.0).toStringAsFixed(1)} hrs',
-                              subtitle: 'EEPROM + Cloud saved',
+                              title: loc.tr('lifetime_hours'),
+                              value: isBn
+                                  ? '${(data.totalSeconds / 3600.0).toStringAsFixed(1)} ঘণ্টা'
+                                  : '${(data.totalSeconds / 3600.0).toStringAsFixed(1)} hrs',
+                              subtitle: loc.tr('saved_memory'),
                               icon: Icons.history,
                               accentColor: const Color(0xFFFFAB40),
                               trailing: const Tooltip(
-                                message: 'Saved to internal flash; survives power outage',
+                                message: 'Saved in NodeMCU flash memory',
                                 child: Icon(Icons.cloud_done, size: 16, color: Color(0xFFFFAB40)),
                               ),
                             ),
                             StatCard(
-                              title: 'Energy Used',
+                              title: loc.tr('energy_used'),
                               value: '${data.estimatedKwh.toStringAsFixed(3)} kWh',
-                              subtitle: 'Est. at ${data.chargerWatt.toInt()}W rated',
+                              subtitle: '${loc.tr('est_rated')} (${data.chargerWatt.toInt()}W)',
                               icon: Icons.offline_bolt_outlined,
                               accentColor: const Color(0xFF00E676),
                             ),
@@ -368,12 +412,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const SizedBox(height: 14),
 
                         // ── COST BANNER ──
-                        _buildCostBanner(data),
+                        _buildCostBanner(data, loc),
 
                         const SizedBox(height: 14),
 
                         // ── LAST UPDATE FOOTER ──
-                        _buildFooter(data, isConnected),
+                        _buildFooter(data, isAlive, loc),
 
                         const SizedBox(height: 20),
                       ],
@@ -388,7 +432,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  AppBar _buildAppBar(bool isConnected, bool waiting) {
+  AppBar _buildAppBar(bool isCloud, bool isAlive, bool waiting, LocalizationService loc) {
+    final statusColor = (isCloud && isAlive)
+        ? const Color(0xFF00E676)
+        : waiting
+            ? const Color(0xFFFFAB40)
+            : const Color(0xFFFF5252);
+
+    final statusText = (isCloud && isAlive)
+        ? loc.tr('online')
+        : waiting
+            ? loc.tr('waiting')
+            : loc.tr('offline');
+
     return AppBar(
       backgroundColor: const Color(0xFF0D1120),
       elevation: 0,
@@ -406,82 +462,144 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: const Icon(Icons.battery_charging_full, color: Colors.black, size: 20),
           ),
           const SizedBox(width: 10),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('Smart Battery Charger',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
-                    overflow: TextOverflow.ellipsis),
-                Text('12V Automation Controller',
-                    style: TextStyle(fontSize: 10, color: Colors.white38)),
+                Text(
+                  loc.tr('app_title'),
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  loc.tr('app_subtitle'),
+                  style: const TextStyle(fontSize: 10, color: Colors.white38),
+                ),
               ],
             ),
           ),
         ],
       ),
       actions: [
-        // Connection status pill
+        // ── LANGUAGE SWITCHER TOGGLE (EN | বাংলা) ──
+        Container(
+          margin: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              InkWell(
+                onTap: () => loc.setLanguage(AppLanguage.en),
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: !loc.isBengali ? const Color(0xFF00E5FF) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(
+                    'EN',
+                    style: TextStyle(
+                      color: !loc.isBengali ? Colors.black : Colors.white60,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+              ),
+              InkWell(
+                onTap: () => loc.setLanguage(AppLanguage.bn),
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: loc.isBengali ? const Color(0xFF00E676) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(
+                    'বাংলা',
+                    style: TextStyle(
+                      color: loc.isBengali ? Colors.black : Colors.white60,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 6),
+
+        // ── PWA INSTALL BUTTON (CHROME / DESKTOP) ──
+        IconButton(
+          icon: const Icon(Icons.install_mobile_rounded, color: Color(0xFF00E5FF), size: 20),
+          tooltip: loc.tr('install_app_tooltip'),
+          onPressed: () async {
+            final accepted = await PwaService.instance.promptInstall();
+            if (accepted) {
+              ToastService.instance.success(
+                loc.isBengali ? 'অ্যাপ ইনস্টলেশন সফল হয়েছে!' : 'App installed successfully!',
+              );
+            } else {
+              ToastService.instance.info(
+                loc.isBengali
+                    ? 'ক্রোম ব্রাউজার মেন্যু (⋮) থেকে "Install app" চাপুন'
+                    : 'Use Chrome browser menu (⋮) -> "Install app"',
+              );
+            }
+          },
+        ),
+
+        // ── NODE MCU ONLINE / POWER OFF STATUS PILL ──
         Center(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 400),
-            margin: const EdgeInsets.only(right: 4),
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 4),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-              color: isConnected
-                  ? const Color(0xFF00E676).withValues(alpha: 0.12)
-                  : waiting
-                      ? const Color(0xFFFFAB40).withValues(alpha: 0.12)
-                      : const Color(0xFFFF5252).withValues(alpha: 0.12),
+              color: statusColor.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: isConnected
-                    ? const Color(0xFF00E676).withValues(alpha: 0.4)
-                    : waiting
-                        ? const Color(0xFFFFAB40).withValues(alpha: 0.4)
-                        : const Color(0xFFFF5252).withValues(alpha: 0.4),
-              ),
+              border: Border.all(color: statusColor.withValues(alpha: 0.4)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _PulsingDot(
-                  color: isConnected
-                      ? const Color(0xFF00E676)
-                      : waiting
-                          ? const Color(0xFFFFAB40)
-                          : const Color(0xFFFF5252),
-                ),
+                _PulsingDot(color: statusColor),
                 const SizedBox(width: 5),
                 Text(
-                  isConnected ? 'ONLINE' : waiting ? 'WAITING' : 'OFFLINE',
+                  statusText,
                   style: TextStyle(
-                    color: isConnected
-                        ? const Color(0xFF00E676)
-                        : waiting
-                            ? const Color(0xFFFFAB40)
-                            : const Color(0xFFFF5252),
-                    fontSize: 10,
+                    color: statusColor,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.bold,
-                    letterSpacing: 0.8,
+                    letterSpacing: 0.6,
                   ),
                 ),
               ],
             ),
           ),
         ),
+
+        // Refresh Button
         IconButton(
           icon: const Icon(Icons.refresh_rounded, color: Colors.white54, size: 20),
-          tooltip: 'Refresh Now',
+          tooltip: loc.tr('refresh'),
           onPressed: () {
             _service.fetchData();
-            ToastService.instance.info('Refreshing data...');
+            ToastService.instance.info(loc.tr('refresh'));
           },
         ),
+
+        // Settings Dialog Button
         IconButton(
           icon: const Icon(Icons.settings_outlined, color: Colors.white54, size: 20),
-          tooltip: 'Settings',
+          tooltip: loc.tr('settings_title'),
           onPressed: () => showDialog(
             context: context,
             builder: (_) => SettingsDialog(service: _service),
@@ -492,10 +610,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildOfflineBanner() {
+  Widget _buildNodeMcuOfflineBanner(LocalizationService loc) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: const Color(0xFFFF5252).withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(14),
@@ -503,11 +621,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.wifi_off_rounded, color: Color(0xFFFF5252), size: 18),
+          const Icon(Icons.power_off_rounded, color: Color(0xFFFF5252), size: 20),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'NodeMCU offline — ${_service.lastError}. Check Wi-Fi or configure in Settings.',
+              loc.tr('nodemcu_power_off_warning'),
+              style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 12, height: 1.3),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCloudOfflineBanner(LocalizationService loc) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFF5252).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFF5252).withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off, color: Color(0xFFFF5252), size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Server disconnected — ${_service.lastError}. Check internet connection.',
               style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 12),
             ),
           ),
@@ -516,7 +658,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildWaitingBanner() {
+  Widget _buildWaitingBanner(LocalizationService loc) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -525,14 +667,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFFFAB40).withValues(alpha: 0.3)),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          Icon(Icons.sync_rounded, color: Color(0xFFFFAB40), size: 18),
-          SizedBox(width: 10),
+          const Icon(Icons.sync_rounded, color: Color(0xFFFFAB40), size: 18),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Firebase connected — waiting for NodeMCU to send first telemetry...',
-              style: TextStyle(color: Color(0xFFFFCC80), fontSize: 12),
+              loc.isBengali
+                  ? 'ক্লাউড সংযোগ সচল — নোডএমসিইউ থেকে নতুন ডেটার অপেক্ষায়...'
+                  : 'Cloud connected — waiting for NodeMCU telemetry heartbeat...',
+              style: const TextStyle(color: Color(0xFFFFCC80), fontSize: 12),
             ),
           ),
         ],
@@ -540,7 +684,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildCostBanner(ChargerData data) {
+  Widget _buildCostBanner(ChargerData data, LocalizationService loc) {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -568,8 +712,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Estimated Electricity Cost (Total)',
-                    style: TextStyle(color: Colors.white60, fontSize: 12)),
+                Text(
+                  loc.tr('est_bill'),
+                  style: const TextStyle(color: Colors.white60, fontSize: 12),
+                ),
                 const SizedBox(height: 3),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 400),
@@ -578,11 +724,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     crossAxisAlignment: CrossAxisAlignment.baseline,
                     textBaseline: TextBaseline.alphabetic,
                     children: [
-                      Text('৳ ${data.estimatedBdt.toStringAsFixed(2)}',
-                          style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w900)),
-                      const SizedBox(width: 5),
-                      const Text('BDT',
-                          style: TextStyle(color: Color(0xFF00E676), fontWeight: FontWeight.bold, fontSize: 13)),
+                      Text(
+                        '৳ ${data.estimatedBdt.toStringAsFixed(2)}',
+                        style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        loc.tr('bdt'),
+                        style: const TextStyle(color: Color(0xFF00E676), fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
                     ],
                   ),
                 ),
@@ -592,9 +742,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              const Text('Rate', style: TextStyle(color: Colors.white38, fontSize: 9)),
-              Text('${data.kwhRateBdt.toStringAsFixed(1)} Tk/u',
-                  style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13)),
+              Text(
+                loc.tr('hourly_cost'),
+                style: const TextStyle(color: Colors.white38, fontSize: 10),
+              ),
+              Text(
+                '≈ ৳ ${data.hourlyCostBdt.toStringAsFixed(2)} / hr',
+                style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
             ],
           ),
         ],
@@ -602,7 +757,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildFooter(ChargerData data, bool isConnected) {
+  Widget _buildFooter(ChargerData data, bool isAlive, LocalizationService loc) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
@@ -616,9 +771,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              isConnected && data.lastUpdated > 0
-                  ? 'Last update: ${data.lastUpdated}s uptime on NodeMCU • Refresh every 1s • Energy estimated at rated ${data.chargerWatt.toInt()}W'
-                  : 'Energy & cost are mathematically estimated using rated charger wattage and charging duration. Actual may differ ±15%.',
+              isAlive && data.uptimeSecs > 0
+                  ? (loc.isBengali
+                      ? 'নোডএমসিইউ সচল • আপটাইম: ${data.uptimeSecs} সে. • চার্জার ক্ষমতা: ${data.chargerWatt.toInt()}W • রিফ্রেশ: প্রতি ১ সেকেন্ড'
+                      : 'NodeMCU Active • Uptime: ${data.uptimeSecs}s • IP: ${data.deviceIp} • Rated: ${data.chargerWatt.toInt()}W')
+                  : (loc.isBengali
+                      ? 'চার্জার রেটেড ক্ষমতা ও চলার সময় অনুযায়ী বিদ্যুৎ বিল হিসেব করা হচ্ছে।'
+                      : 'Electricity cost calculated from rated power wattage and live session duration.'),
               style: const TextStyle(color: Colors.white38, fontSize: 10.5, height: 1.4),
             ),
           ),
@@ -628,9 +787,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PULSING DOT — animated connection indicator
-// ─────────────────────────────────────────────────────────────────────────────
 class _PulsingDot extends StatefulWidget {
   final Color color;
   const _PulsingDot({required this.color});

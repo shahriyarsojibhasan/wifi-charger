@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/firebase_service.dart';
+import '../services/localization_service.dart';
 
 class SettingsDialog extends StatefulWidget {
   final FirebaseService service;
@@ -22,9 +23,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late TextEditingController _espIpCtrl;
   late TextEditingController _deviceIdCtrl;
 
-  late bool _useLocalEsp;
   late bool _scheduleEnabled;
-  late bool _sensorInstalled;
+  late int _sensorMode;
   bool _isSaving = false;
 
   @override
@@ -41,9 +41,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _dbUrlCtrl = TextEditingController(text: widget.service.databaseUrl);
     _espIpCtrl = TextEditingController(text: widget.service.localEspIp);
     _deviceIdCtrl = TextEditingController(text: widget.service.deviceId);
-    _useLocalEsp = widget.service.useLocalEsp;
     _scheduleEnabled = d.scheduleEnabled;
-    _sensorInstalled = d.voltageSensorInstalled;
+    _sensorMode = d.sensorMode;
   }
 
   @override
@@ -63,27 +62,33 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final loc = LocalizationService.instance;
+    final isBn = loc.isBengali;
+
     return Dialog(
       backgroundColor: const Color(0xFF161C2E),
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       child: Container(
         constraints: const BoxConstraints(maxWidth: 540),
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(22),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Dialog Header
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.tune, color: Color(0xFF00E5FF), size: 22),
-                      SizedBox(width: 10),
-                      Text('Full System Configuration',
-                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+                      const Icon(Icons.settings, color: Color(0xFF00E5FF), size: 22),
+                      const SizedBox(width: 10),
+                      Text(
+                        loc.tr('settings_title'),
+                        style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                      ),
                     ],
                   ),
                   IconButton(
@@ -94,93 +99,98 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
               const Divider(color: Colors.white12, height: 24),
 
-              _buildSectionTitle('1. NETWORK & CONNECTION MODE'),
+              // ── 1. SENSOR HARDWARE PHASE (0: None, 1: 100k/10k, 2: 0-25V) ──
+              _buildSectionTitle(loc.tr('sensor_hardware')),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      loc.tr('sensor_select_label'),
+                      style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 8),
+                    _buildRadioTile(
+                      title: loc.tr('sensor_none'),
+                      subtitle: isBn
+                          ? 'বর্তমান রিলে মোড — টাইমার ও শিডিউল অনুযায়ী স্বয়ংক্রিয়ভাবে চার্জ হবে।'
+                          : 'Pure relay mode — automated by timer and schedule.',
+                      value: 0,
+                    ),
+                    _buildRadioTile(
+                      title: loc.tr('sensor_divider'),
+                      subtitle: isBn
+                          ? 'অস্থায়ী ১০০k ও ১০k রেজিস্টর দিয়ে ভোল্টেজ পরিমাপ।'
+                          : 'Temporary 100k/10k resistor voltage divider.',
+                      value: 1,
+                    ),
+                    _buildRadioTile(
+                      title: loc.tr('sensor_module'),
+                      subtitle: isBn
+                          ? 'ভবিষ্যতের ০-২৫V ভোল্টেজ সেন্সর মডিউল (৫:১ অনুপাত)।'
+                          : 'Standard 0-25V voltage sensor module.',
+                      value: 2,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // ── 2. VOLTAGE PROTECTION THRESHOLDS (if sensor installed) ──
+              if (_sensorMode > 0) ...[
+                _buildSectionTitle(isBn ? 'ভোল্টেজ প্রটেকশন লিমিট' : 'VOLTAGE PROTECTION THRESHOLDS'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildTextField(
+                        controller: _lowCutCtrl,
+                        label: isBn ? 'লো কাট ভোল্টেজ (V)' : 'Low Cut Voltage (V)',
+                        hint: '11.0',
+                        icon: Icons.arrow_downward,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildTextField(
+                        controller: _highCutCtrl,
+                        label: isBn ? 'ফুল চার্জ কাট (V)' : 'Full Charge Cut (V)',
+                        hint: '12.8',
+                        icon: Icons.arrow_upward,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                _buildTextField(
+                  controller: _calibCtrl,
+                  label: isBn ? 'ভোল্টেজ ক্যালিব্রেশন মাল্টিপ্লায়ার' : 'Voltage Calibration Multiplier',
+                  hint: '1.000',
+                  icon: Icons.straighten,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                ),
+                const SizedBox(height: 20),
+              ],
+
+              // ── 3. CHARGING SCHEDULE ──
+              _buildSectionTitle(loc.tr('night_schedule')),
               Container(
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.04),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: SwitchListTile(
-                  title: const Text('Direct Local NodeMCU IP Mode',
-                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-                  subtitle: Text(
-                    _useLocalEsp
-                        ? 'Connecting directly via local WiFi IP (${_espIpCtrl.text})'
-                        : 'Connecting via Firebase Realtime Database (Cloud)',
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
-                  ),
-                  value: _useLocalEsp,
-                  activeThumbColor: const Color(0xFF00E676),
-                  onChanged: (val) => setState(() => _useLocalEsp = val),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              if (_useLocalEsp) ...[
-                _buildTextField(controller: _espIpCtrl, label: 'NodeMCU Local IP', hint: '192.168.1.150', icon: Icons.router),
-              ] else ...[
-                Row(
-                  children: [
-                    Expanded(flex: 3, child: _buildTextField(controller: _dbUrlCtrl, label: 'Firebase RTDB URL', hint: 'https://...firebaseio.com', icon: Icons.cloud_queue)),
-                    const SizedBox(width: 10),
-                    Expanded(flex: 2, child: _buildTextField(controller: _deviceIdCtrl, label: 'Device ID', hint: 'wifi_charger_01', icon: Icons.developer_board)),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 20),
-
-              _buildSectionTitle('2. HARDWARE PHASE & SENSOR STATUS'),
-              Container(
-                decoration: BoxDecoration(
-                  color: _sensorInstalled
-                      ? const Color(0xFF00E676).withValues(alpha: 0.08)
-                      : const Color(0xFFFFD600).withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: _sensorInstalled
-                        ? const Color(0xFF00E676).withValues(alpha: 0.3)
-                        : const Color(0xFFFFD600).withValues(alpha: 0.3),
-                  ),
-                ),
-                child: SwitchListTile(
                   title: Text(
-                    _sensorInstalled ? 'Voltage Sensor Installed (Phase 2)' : 'Current Hardware: Only Relay (Phase 1)',
-                    style: TextStyle(
-                      color: _sensorInstalled ? const Color(0xFF00E676) : const Color(0xFFFFD600),
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    isBn ? 'দৈনিক শিডিউল চালু রাখুন' : 'Enable Daily Schedule Window',
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
                   ),
-                  subtitle: Text(
-                    _sensorInstalled
-                        ? '100k/10k divider active: enables full Low/High Cut voltage switching.'
-                        : 'Timer/Schedule mode. Enable once you solder the 100k/10k divider.',
-                    style: const TextStyle(color: Colors.white60, fontSize: 11),
-                  ),
-                  value: _sensorInstalled,
-                  activeThumbColor: const Color(0xFF00E676),
-                  onChanged: (val) => setState(() => _sensorInstalled = val),
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              _buildSectionTitle('3. VOLTAGE PROTECTION THRESHOLDS'),
-              Row(
-                children: [
-                  Expanded(child: _buildTextField(controller: _lowCutCtrl, label: 'Low Cut Voltage (V)', hint: '11.0', icon: Icons.arrow_downward, keyboardType: const TextInputType.numberWithOptions(decimal: true))),
-                  const SizedBox(width: 12),
-                  Expanded(child: _buildTextField(controller: _highCutCtrl, label: 'High Cut Voltage (V)', hint: '12.8', icon: Icons.arrow_upward, keyboardType: const TextInputType.numberWithOptions(decimal: true))),
-                ],
-              ),
-              const SizedBox(height: 10),
-              _buildTextField(controller: _calibCtrl, label: 'Calibration Multiplier (Default 1.000)', hint: '1.025', icon: Icons.straighten, keyboardType: const TextInputType.numberWithOptions(decimal: true)),
-              const SizedBox(height: 20),
-
-              _buildSectionTitle('4. DAILY CHARGING SCHEDULE'),
-              Container(
-                decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.04), borderRadius: BorderRadius.circular(12)),
-                child: SwitchListTile(
-                  title: const Text('Enable Daily Schedule Window', style: TextStyle(color: Colors.white, fontSize: 13)),
                   value: _scheduleEnabled,
                   activeThumbColor: const Color(0xFF00E676),
                   onChanged: (val) => setState(() => _scheduleEnabled = val),
@@ -189,24 +199,123 @@ class _SettingsDialogState extends State<SettingsDialog> {
               const SizedBox(height: 10),
               Row(
                 children: [
-                  Expanded(child: _buildTextField(controller: _startHourCtrl, label: 'Start Hour (0-23)', hint: '3 (3:00 AM)', icon: Icons.alarm, keyboardType: TextInputType.number)),
+                  Expanded(
+                    child: _buildTextField(
+                      controller: _startHourCtrl,
+                      label: isBn ? 'শুরুর ঘণ্টা (০-২৩)' : 'Start Hour (0-23)',
+                      hint: '3 (3:00 AM)',
+                      icon: Icons.alarm,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
                   const SizedBox(width: 12),
-                  Expanded(child: _buildTextField(controller: _stopHourCtrl, label: 'Stop Hour (0-23)', hint: '4 (4:00 AM)', icon: Icons.alarm_off, keyboardType: TextInputType.number)),
+                  Expanded(
+                    child: _buildTextField(
+                      controller: _stopHourCtrl,
+                      label: isBn ? 'শেষের ঘণ্টা (০-২৩)' : 'Stop Hour (0-23)',
+                      hint: '4 (4:00 AM)',
+                      icon: Icons.alarm_off,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 20),
 
-              _buildSectionTitle('5. ENERGY & ELECTRICITY TARIFF'),
+              // ── 4. ENERGY & ELECTRICITY TARIFF ──
+              _buildSectionTitle(loc.tr('stats_title')),
               Row(
                 children: [
-                  Expanded(child: _buildTextField(controller: _wattCtrl, label: 'Charger Power (Watts)', hint: '60', icon: Icons.bolt, keyboardType: TextInputType.number)),
+                  Expanded(
+                    child: _buildTextField(
+                      controller: _wattCtrl,
+                      label: loc.tr('charger_watt'),
+                      hint: '60',
+                      icon: Icons.bolt,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
                   const SizedBox(width: 12),
-                  Expanded(child: _buildTextField(controller: _rateCtrl, label: 'Tariff (BDT / kWh)', hint: '9.0', icon: Icons.monetization_on, keyboardType: const TextInputType.numberWithOptions(decimal: true))),
+                  Expanded(
+                    child: _buildTextField(
+                      controller: _rateCtrl,
+                      label: loc.tr('tariff_rate'),
+                      hint: '9.0',
+                      icon: Icons.monetization_on,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    ),
+                  ),
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
-              // Danger Zone
+              // ── 5. WI-FI & NETWORK MANAGEMENT ──
+              _buildSectionTitle(loc.tr('change_wifi')),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isBn
+                          ? 'নোডএমসিইউ-এর সাথে নতুন ওয়াইফাই সংযোগ করার জন্য নিচের বাটনে চাপ দিন। নোডএমসিইউ হটস্পট ("WiFi-Charger-Setup") চালু করবে।'
+                          : 'To connect NodeMCU to a different Wi-Fi, tap below to re-launch the setup hotspot.',
+                      style: const TextStyle(color: Colors.white60, fontSize: 11.5, height: 1.4),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00E5FF),
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      ),
+                      icon: const Icon(Icons.wifi_protected_setup, size: 18),
+                      label: Text(
+                        loc.tr('reset_wifi_btn'),
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                      onPressed: () async {
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            backgroundColor: const Color(0xFF161C2E),
+                            title: Text(loc.tr('change_wifi'), style: const TextStyle(color: Colors.white)),
+                            content: Text(
+                              isBn
+                                  ? 'আপনি কি নিশ্চিত? নোডএমসিইউ ওয়াইফাই রিসেট করে "WiFi-Charger-Setup" হটস্পট চালু করবে।'
+                                  : 'Reset Wi-Fi credentials and start NodeMCU setup hotspot?',
+                              style: const TextStyle(color: Colors.white70),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: Text(loc.tr('cancel')),
+                              ),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF), foregroundColor: Colors.black),
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('Reset Wi-Fi'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirm == true) {
+                          await widget.service.triggerWifiReset();
+                          if (context.mounted) Navigator.pop(context);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // ── 6. DANGER ZONE: RESET BILL ──
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -217,27 +326,39 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Reset Statistics & Bill Counters', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-                          Text('Clears session, today, lifetime hours & cost', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                          Text(loc.tr('reset_stats'),
+                              style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.bold)),
+                          Text(
+                            isBn ? 'সেশন ও মোট বিদ্যুৎ বিল শূন্য করে দেবে' : 'Clears hours & bill statistics',
+                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                          ),
                         ],
                       ),
                     ),
-                    const SizedBox(width: 10),
                     ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFF5252), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFFF5252),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      ),
                       onPressed: () async {
                         final confirm = await showDialog<bool>(
                           context: context,
                           builder: (ctx) => AlertDialog(
                             backgroundColor: const Color(0xFF161C2E),
-                            title: const Text('Confirm Reset', style: TextStyle(color: Colors.white)),
-                            content: const Text('Reset all charging hours and bill statistics to zero?'),
+                            title: Text(loc.tr('reset_stats'), style: const TextStyle(color: Colors.white)),
+                            content: Text(
+                              isBn
+                                  ? 'আপনি কি সব বিল ও চার্জিং হিসেব শূন্য করতে চান?'
+                                  : 'Reset all charging hours and bill statistics to zero?',
+                              style: const TextStyle(color: Colors.white70),
+                            ),
                             actions: [
-                              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                              TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(loc.tr('cancel'))),
                               ElevatedButton(
                                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFF5252)),
                                 onPressed: () => Navigator.pop(ctx, true),
@@ -255,13 +376,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
               const SizedBox(height: 24),
 
-              // Actions
+              // Actions: Cancel & Save
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
                     onPressed: () => Navigator.pop(context),
-                    child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+                    child: Text(loc.tr('cancel'), style: const TextStyle(color: Colors.white60)),
                   ),
                   const SizedBox(width: 12),
                   ElevatedButton.icon(
@@ -274,17 +395,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
                     icon: _isSaving
                         ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
                         : const Icon(Icons.check, size: 18),
-                    label: Text(_isSaving ? 'Saving...' : 'Save & Apply', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    label: Text(_isSaving ? 'Saving...' : loc.tr('save_changes'), style: const TextStyle(fontWeight: FontWeight.bold)),
                     onPressed: _isSaving
                         ? null
                         : () async {
                             setState(() => _isSaving = true);
-                            widget.service.updateSettings(
-                              databaseUrl: _dbUrlCtrl.text,
-                              localEspIp: _espIpCtrl.text,
-                              deviceId: _deviceIdCtrl.text,
-                              useLocalEsp: _useLocalEsp,
-                            );
                             await widget.service.updateFullConfig(
                               lowCut: double.tryParse(_lowCutCtrl.text) ?? 11.0,
                               highCut: double.tryParse(_highCutCtrl.text) ?? 12.8,
@@ -294,7 +409,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                               chargeStopHour: int.tryParse(_stopHourCtrl.text) ?? 4,
                               scheduleEnabled: _scheduleEnabled,
                               voltageCalibration: double.tryParse(_calibCtrl.text) ?? 1.00,
-                              voltageSensorInstalled: _sensorInstalled,
+                              sensorMode: _sensorMode,
                             );
                             if (context.mounted) Navigator.pop(context);
                           },
@@ -303,6 +418,49 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRadioTile({required String title, required String subtitle, required int value}) {
+    final isSelected = _sensorMode == value;
+    return InkWell(
+      onTap: () => setState(() => _sensorMode = value),
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF00E5FF).withValues(alpha: 0.12) : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF00E5FF).withValues(alpha: 0.5) : Colors.white10,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              isSelected ? Icons.radio_button_checked : Icons.radio_button_off,
+              color: isSelected ? const Color(0xFF00E5FF) : Colors.white38,
+              size: 18,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                        color: isSelected ? Colors.white : Colors.white70,
+                        fontSize: 12.5,
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      )),
+                  Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

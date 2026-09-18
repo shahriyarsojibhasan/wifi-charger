@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/firebase_service.dart';
-import '../models/charger_data.dart';
+import '../services/localization_service.dart';
+import '../services/toast_service.dart';
 
 class ControlPanel extends StatefulWidget {
   final FirebaseService service;
@@ -34,19 +35,36 @@ class _ControlPanelState extends State<ControlPanel>
     super.dispose();
   }
 
-  String _scheduleLabel(ChargerData d) {
-    final start = d.chargeStartHour.toString().padLeft(2, '0');
-    final stop = d.chargeStopHour.toString().padLeft(2, '0');
-    return '$start:00–$stop:00';
+  String _formatTimerDuration(int totalSecs, bool isBn) {
+    final h = totalSecs ~/ 3600;
+    final m = (totalSecs % 3600) ~/ 60;
+    final s = totalSecs % 60;
+    if (isBn) {
+      String toBn(int n) {
+        const enDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+        const bnDigits = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+        String str = n.toString().padLeft(2, '0');
+        for (int i = 0; i < 10; i++) {
+          str = str.replaceAll(enDigits[i], bnDigits[i]);
+        }
+        return str;
+      }
+      return '${toBn(h)}:${toBn(m)}:${toBn(s)}';
+    }
+    return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
     final svc = widget.service;
+    final loc = LocalizationService.instance;
+    final isBn = loc.isBengali;
     final data = svc.data;
     final isRelayOn = svc.displayRelayState;
     final isAuto = svc.displayAutoMode;
-    final isSchedule = data.isScheduleWindow;
+    final isAlive = svc.isNodeMcuAlive;
+    final timerActive = data.timerActive;
+    final remainingSecs = data.timerRemainingSeconds;
 
     return Container(
       padding: const EdgeInsets.all(22),
@@ -75,7 +93,7 @@ class _ControlPanelState extends State<ControlPanel>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header row
+          // ── HEADER ROW ──
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -87,13 +105,12 @@ class _ControlPanelState extends State<ControlPanel>
                       color: const Color(0xFF7C4DFF).withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.tune,
-                        color: Color(0xFFB388FF), size: 18),
+                    child: const Icon(Icons.tune, color: Color(0xFFB388FF), size: 18),
                   ),
                   const SizedBox(width: 10),
-                  const Text(
-                    'Charger Controller',
-                    style: TextStyle(
+                  Text(
+                    loc.tr('app_title'),
+                    style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
                       fontSize: 16,
@@ -103,17 +120,15 @@ class _ControlPanelState extends State<ControlPanel>
               ),
               // Schedule badge
               if (data.scheduleEnabled)
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
-                    color: isSchedule
+                    color: data.isScheduleWindow
                         ? const Color(0xFF00E676).withValues(alpha: 0.15)
                         : Colors.white.withValues(alpha: 0.06),
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
-                      color: isSchedule
+                      color: data.isScheduleWindow
                           ? const Color(0xFF00E676).withValues(alpha: 0.5)
                           : Colors.white12,
                     ),
@@ -124,19 +139,15 @@ class _ControlPanelState extends State<ControlPanel>
                       Icon(
                         Icons.schedule,
                         size: 13,
-                        color: isSchedule
-                            ? const Color(0xFF00E676)
-                            : Colors.white60,
+                        color: data.isScheduleWindow ? const Color(0xFF00E676) : Colors.white60,
                       ),
                       const SizedBox(width: 5),
                       Text(
-                        '${_scheduleLabel(data)} ${isSchedule ? "• Active" : ""}',
+                        '${data.chargeStartHour.toString().padLeft(2, '0')}:00–${data.chargeStopHour.toString().padLeft(2, '0')}:00',
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: isSchedule
-                              ? const Color(0xFF00E676)
-                              : Colors.white60,
+                          color: data.isScheduleWindow ? const Color(0xFF00E676) : Colors.white60,
                         ),
                       ),
                     ],
@@ -144,7 +155,7 @@ class _ControlPanelState extends State<ControlPanel>
                 ),
             ],
           ),
-          const SizedBox(height: 22),
+          const SizedBox(height: 20),
 
           // ── BIG POWER BUTTON ──
           Center(
@@ -152,54 +163,82 @@ class _ControlPanelState extends State<ControlPanel>
               animation: _glowAnimation,
               builder: (context, _) {
                 return GestureDetector(
-                  onTap: () => svc.setRelayManual(!isRelayOn),
+                  onTap: () {
+                    if (!isAlive) {
+                      ToastService.instance.warning(loc.tr('nodemcu_power_off_warning'));
+                      return;
+                    }
+                    svc.setRelayManual(!isRelayOn);
+                  },
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
                       // Outer glow when ON
                       if (isRelayOn)
                         Container(
-                          width: 108,
-                          height: 108,
+                          width: 136,
+                          height: 136,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: const Color(0xFF00E676)
-                                    .withValues(alpha: _glowAnimation.value * 0.45),
-                                blurRadius: 30,
-                                spreadRadius: 10,
-                              ),
-                            ],
+                            color: const Color(0xFF00E676)
+                                .withValues(alpha: 0.15 * _glowAnimation.value),
                           ),
                         ),
+                      // Middle ring
                       Container(
-                        width: 90,
-                        height: 90,
+                        width: 114,
+                        height: 114,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isRelayOn
+                              ? const Color(0xFF00E676).withValues(alpha: 0.20)
+                              : Colors.white.withValues(alpha: 0.04),
+                          border: Border.all(
+                            color: isRelayOn
+                                ? const Color(0xFF00E676).withValues(alpha: 0.7)
+                                : Colors.white24,
+                            width: 2.2,
+                          ),
+                          boxShadow: isRelayOn
+                              ? [
+                                  BoxShadow(
+                                    color: const Color(0xFF00E676).withValues(alpha: 0.35),
+                                    blurRadius: 20,
+                                    spreadRadius: 2,
+                                  ),
+                                ]
+                              : [],
+                        ),
+                      ),
+                      // Inner button
+                      Container(
+                        width: 86,
+                        height: 86,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           gradient: RadialGradient(
                             colors: isRelayOn
                                 ? [
                                     const Color(0xFF00E676),
-                                    const Color(0xFF00C853),
+                                    const Color(0xFF00B248),
                                   ]
                                 : [
-                                    const Color(0xFF2A3050),
-                                    const Color(0xFF1A2035),
+                                    const Color(0xFF26324D),
+                                    const Color(0xFF161E30),
                                   ],
                           ),
-                          border: Border.all(
-                            color: isRelayOn
-                                ? const Color(0xFF00E676)
-                                : Colors.white.withValues(alpha: 0.15),
-                            width: 2,
-                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.4),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
                         ),
                         child: Icon(
-                          Icons.power_settings_new,
-                          color: isRelayOn ? Colors.black : Colors.white38,
-                          size: 38,
+                          Icons.power_settings_new_rounded,
+                          size: 40,
+                          color: isRelayOn ? Colors.black : Colors.white54,
                         ),
                       ),
                     ],
@@ -209,183 +248,171 @@ class _ControlPanelState extends State<ControlPanel>
             ),
           ),
 
-          const SizedBox(height: 10),
-          Center(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              child: Text(
-                isRelayOn ? '⚡  CHARGER ON' : '○  CHARGER OFF',
-                key: ValueKey(isRelayOn),
-                style: TextStyle(
-                  color: isRelayOn
-                      ? const Color(0xFF00E676)
-                      : Colors.white38,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ),
-          ),
+          const SizedBox(height: 12),
           Center(
             child: Text(
-              isAuto
-                  ? 'Auto mode active — tap to override'
-                  : 'Manual override — tap to toggle',
-              style: const TextStyle(color: Colors.white38, fontSize: 10),
+              isRelayOn ? loc.tr('turn_off') : loc.tr('turn_on'),
+              style: TextStyle(
+                color: isRelayOn ? const Color(0xFF00E676) : Colors.white70,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+
+          // ── AUTO / MANUAL MODE TOGGLE ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isAuto ? loc.tr('auto_mode') : loc.tr('manual_mode'),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        isAuto ? loc.tr('auto_mode_sub') : loc.tr('manual_mode_sub'),
+                        style: const TextStyle(color: Colors.white38, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: isAuto,
+                  activeThumbColor: const Color(0xFF00E5FF),
+                  activeTrackColor: const Color(0xFF00E5FF).withValues(alpha: 0.3),
+                  inactiveThumbColor: Colors.white38,
+                  inactiveTrackColor: Colors.white10,
+                  onChanged: (val) {
+                    if (!isAlive) {
+                      ToastService.instance.warning(loc.tr('nodemcu_power_off_warning'));
+                      return;
+                    }
+                    svc.setAutoMode(val);
+                  },
+                ),
+              ],
             ),
           ),
 
-          const SizedBox(height: 20),
-          const Divider(color: Colors.white10, height: 1),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
 
-          // ── AUTO MODE TOGGLE ──
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Auto Voltage & Schedule Logic',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      child: Text(
-                        isAuto
-                            ? '${data.lowCut.toStringAsFixed(1)}V low → ${data.highCut.toStringAsFixed(1)}V full cut'
-                            : 'Manual override active',
-                        key: ValueKey(isAuto),
-                        style: TextStyle(
-                          color: isAuto
-                              ? const Color(0xFF00E676)
-                              : const Color(0xFFFFAB40),
-                          fontSize: 11,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                value: isAuto,
-                activeThumbColor: const Color(0xFF00E676),
-                activeTrackColor:
-                    const Color(0xFF00E676).withValues(alpha: 0.3),
-                inactiveThumbColor: Colors.white54,
-                inactiveTrackColor: Colors.white12,
-                onChanged: (val) => svc.setAutoMode(val),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 14),
-
-          // ── SESSION STATS ROW ──
+          // ── REALTIME COUNTDOWN TIMER ──
           Row(
             children: [
-              Expanded(
-                child: _MiniStat(
-                  icon: Icons.timer,
-                  label: 'Auto Session',
-                  value: ChargerData.formatDuration(data.currentSessionSeconds),
-                  color: const Color(0xFF00E5FF),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _MiniStat(
-                  icon: Icons.touch_app,
-                  label: 'Manual Total',
-                  value: ChargerData.formatDuration(data.manualOnSeconds),
-                  color: const Color(0xFFFFAB40),
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 12),
-
-          // Power-safe notice
-          Row(
-            children: [
-              const Icon(Icons.shield_outlined,
-                  color: Color(0xFF00E5FF), size: 14),
+              const Icon(Icons.timer_outlined, color: Color(0xFFFFAB40), size: 16),
               const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Power-cut safe: runtime & bill persist in EEPROM + Firebase.',
-                  style: TextStyle(
-                    color: const Color(0xFF80D8FF).withValues(alpha: 0.8),
-                    fontSize: 10.5,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
+              Text(
+                loc.tr('quick_timer'),
+                style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
               ),
             ],
           ),
+          const SizedBox(height: 10),
+
+          if (timerActive && remainingSecs > 0) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFAB40).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFFFAB40).withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.alarm_on, color: Color(0xFFFFAB40), size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(loc.tr('timer_running'),
+                            style: const TextStyle(color: Color(0xFFFFAB40), fontSize: 11, fontWeight: FontWeight.bold)),
+                        Text(
+                          '${loc.tr('timer_remaining')}: ${_formatTimerDuration(remainingSecs, isBn)}',
+                          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFF5252),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () => svc.setTimer(0),
+                    child: Text(loc.tr('cancel_timer'), style: const TextStyle(fontSize: 11)),
+                  ),
+                ],
+              ),
+            ),
+          ] else ...[
+            Row(
+              children: [
+                _TimerButton(label: loc.tr('min_30'), minutes: 30, svc: svc, isAlive: isAlive),
+                const SizedBox(width: 6),
+                _TimerButton(label: loc.tr('hour_1'), minutes: 60, svc: svc, isAlive: isAlive),
+                const SizedBox(width: 6),
+                _TimerButton(label: loc.tr('hour_2'), minutes: 120, svc: svc, isAlive: isAlive),
+                const SizedBox(width: 6),
+                _TimerButton(label: loc.tr('hour_4'), minutes: 240, svc: svc, isAlive: isAlive),
+              ],
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-class _MiniStat extends StatelessWidget {
-  final IconData icon;
+class _TimerButton extends StatelessWidget {
   final String label;
-  final String value;
-  final Color color;
+  final int minutes;
+  final FirebaseService svc;
+  final bool isAlive;
 
-  const _MiniStat(
-      {required this.icon,
-      required this.label,
-      required this.value,
-      required this.color});
+  const _TimerButton({
+    required this.label,
+    required this.minutes,
+    required this.svc,
+    required this.isAlive,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
-                    style:
-                        const TextStyle(color: Colors.white38, fontSize: 9)),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: Text(
-                    value,
-                    key: ValueKey(value),
-                    style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+    return Expanded(
+      child: OutlinedButton(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: Colors.white,
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          visualDensity: VisualDensity.compact,
+        ),
+        onPressed: () {
+          if (!isAlive) {
+            ToastService.instance.warning(LocalizationService.instance.tr('nodemcu_power_off_warning'));
+            return;
+          }
+          svc.setTimer(minutes);
+        },
+        child: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
       ),
     );
   }
