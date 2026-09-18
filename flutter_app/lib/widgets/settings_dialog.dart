@@ -21,15 +21,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late TextEditingController _startHourCtrl;
   late TextEditingController _stopHourCtrl;
   late TextEditingController _calibCtrl;
-
-  late TextEditingController _wifiSsidCtrl;
-  late TextEditingController _wifiPassCtrl;
-  bool _isWifiHidden = false;
+  late TextEditingController _localIpCtrl;
 
   late bool _scheduleEnabled;
   late int _sensorMode;
+  late bool _solarBackupEnabled;
+  late bool _useLocalEsp;
+
   bool _isSaving = false;
-  bool _isSendingWifi = false;
   bool _isDetectingLocation = false;
 
   @override
@@ -43,12 +42,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _startHourCtrl = TextEditingController(text: d.chargeStartHour.toString());
     _stopHourCtrl = TextEditingController(text: d.chargeStopHour.toString());
     _calibCtrl = TextEditingController(text: d.voltageCalibration.toStringAsFixed(3));
-
-    _wifiSsidCtrl = TextEditingController(text: 'NO NET');
-    _wifiPassCtrl = TextEditingController(text: '09999999');
+    _localIpCtrl = TextEditingController(text: widget.service.localEspIp);
 
     _scheduleEnabled = d.scheduleEnabled;
     _sensorMode = d.sensorMode;
+    _solarBackupEnabled = d.solarBackupEnabled;
+    _useLocalEsp = widget.service.useLocalEsp;
   }
 
   @override
@@ -60,8 +59,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _startHourCtrl.dispose();
     _stopHourCtrl.dispose();
     _calibCtrl.dispose();
-    _wifiSsidCtrl.dispose();
-    _wifiPassCtrl.dispose();
+    _localIpCtrl.dispose();
     super.dispose();
   }
 
@@ -345,6 +343,42 @@ class _SettingsDialogState extends State<SettingsDialog> {
                         ],
                       ),
                     ),
+                    const SizedBox(height: 10),
+                    // Weather-Based Daytime Auto-Charge Switch
+                    SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        loc.tr('cloudy_auto_charge'),
+                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        loc.tr('cloudy_auto_charge_sub'),
+                        style: const TextStyle(color: Colors.white54, fontSize: 10),
+                      ),
+                      value: _solarBackupEnabled,
+                      activeThumbColor: const Color(0xFF00E5FF),
+                      onChanged: (val) => setState(() => _solarBackupEnabled = val),
+                    ),
+                    // Hide / Show Weather & Solar Hub Card Switch
+                    SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        loc.tr('hide_weather_card'),
+                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        loc.tr('hide_weather_sub'),
+                        style: const TextStyle(color: Colors.white54, fontSize: 10),
+                      ),
+                      value: WeatherService.instance.hideWeatherCard,
+                      activeThumbColor: const Color(0xFFFF9100),
+                      onChanged: (val) async {
+                        await WeatherService.instance.setHideWeatherCard(val);
+                        setState(() {});
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -377,8 +411,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
               const SizedBox(height: 16),
 
-              // ── 5. WI-FI CREDENTIALS & MANAGEMENT ──
-              _buildSectionTitle(loc.tr('change_wifi')),
+              // ── 6. LOCAL OFFLINE DIRECT WI-FI (NO INTERNET NEEDED) ──
+              _buildSectionTitle(isBn ? 'লোকাল অফলাইন মোড (ইন্টারনেট ছাড়া)' : 'LOCAL OFFLINE WI-FI (NO INTERNET)'),
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -389,96 +423,33 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildTextField(
-                      controller: _wifiSsidCtrl,
-                      label: loc.tr('wifi_ssid_label'),
-                      hint: 'NO NET',
-                      icon: Icons.wifi,
+                    Text(
+                      isBn
+                          ? 'ইন্টারনেট না থাকলেও ফোন ও নোডএমসিইউ একই রাউটারে বা নোডএমসিইউ হটস্পটে (WiFi-Charger-Setup) কানেক্টেড থাকলে সরাসরি কাজ করবে।'
+                          : 'Control and monitor NodeMCU in realtime without internet when on the same router or connected to WiFi-Charger-Setup.',
+                      style: const TextStyle(color: Colors.white60, fontSize: 11),
                     ),
                     const SizedBox(height: 8),
-                    _buildTextField(
-                      controller: _wifiPassCtrl,
-                      label: loc.tr('wifi_pass_label'),
-                      hint: '09999999',
-                      icon: Icons.lock_outline,
-                    ),
-                    CheckboxListTile(
+                    SwitchListTile(
                       dense: true,
                       contentPadding: EdgeInsets.zero,
-                      title: Text(loc.tr('hidden_ssid'), style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
-                      value: _isWifiHidden,
-                      activeColor: const Color(0xFF00E5FF),
-                      checkColor: Colors.black,
-                      onChanged: (val) => setState(() => _isWifiHidden = val ?? false),
+                      title: Text(
+                        isBn ? 'সরাসরি লোকাল আইপি মোড ব্যবহার করুন' : 'Enable Direct Local IP Mode',
+                        style: const TextStyle(color: Colors.white, fontSize: 12.5),
+                      ),
+                      value: _useLocalEsp,
+                      activeThumbColor: const Color(0xFF00E5FF),
+                      onChanged: (val) => setState(() => _useLocalEsp = val),
                     ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF00E5FF),
-                              foregroundColor: Colors.black,
-                              padding: const EdgeInsets.symmetric(vertical: 9),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            icon: _isSendingWifi
-                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
-                                : const Icon(Icons.send_rounded, size: 16),
-                            label: Text(loc.tr('update_wifi_direct'),
-                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                            onPressed: _isSendingWifi
-                                ? null
-                                : () async {
-                                    setState(() => _isSendingWifi = true);
-                                    await widget.service.updateWifiCredentials(
-                                      ssid: _wifiSsidCtrl.text.trim(),
-                                      pass: _wifiPassCtrl.text.trim(),
-                                      hidden: _isWifiHidden,
-                                    );
-                                    if (mounted) setState(() => _isSendingWifi = false);
-                                  },
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFFFF5252),
-                            side: const BorderSide(color: Color(0xFFFF5252)),
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: () async {
-                            final confirm = await showDialog<bool>(
-                              context: context,
-                              builder: (ctx) => AlertDialog(
-                                backgroundColor: const Color(0xFF161C2E),
-                                title: Text(loc.tr('change_wifi'), style: const TextStyle(color: Colors.white)),
-                                content: Text(
-                                  isBn
-                                      ? 'নোডএমসিইউ ওয়াইফাই রিসেট করে "WiFi-Charger-Setup" হটস্পট চালু করতে চান?'
-                                      : 'Reset Wi-Fi credentials and start NodeMCU setup hotspot?',
-                                  style: const TextStyle(color: Colors.white70),
-                                ),
-                                actions: [
-                                  TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(loc.tr('cancel'))),
-                                  ElevatedButton(
-                                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFF5252)),
-                                    onPressed: () => Navigator.pop(ctx, true),
-                                    child: const Text('Reset'),
-                                  ),
-                                ],
-                              ),
-                            );
-                            if (confirm == true) {
-                              await widget.service.triggerWifiReset();
-                              if (context.mounted) Navigator.pop(context);
-                            }
-                          },
-                          child: const Text('Hotspot Reset', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                        ),
-                      ],
-                    ),
+                    if (_useLocalEsp) ...[
+                      const SizedBox(height: 6),
+                      _buildTextField(
+                        controller: _localIpCtrl,
+                        label: loc.tr('local_ip_label'),
+                        hint: '192.168.4.1',
+                        icon: Icons.router,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -567,6 +538,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
                         ? null
                         : () async {
                             setState(() => _isSaving = true);
+                            widget.service.updateSettings(
+                              useLocalEsp: _useLocalEsp,
+                              localEspIp: _localIpCtrl.text.trim(),
+                            );
+                            await widget.service.setSolarBackupMode(_solarBackupEnabled);
                             await widget.service.updateFullConfig(
                               lowCut: double.tryParse(_lowCutCtrl.text) ?? 11.0,
                               highCut: double.tryParse(_highCutCtrl.text) ?? 12.8,

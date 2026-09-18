@@ -104,8 +104,18 @@ class FirebaseService extends ChangeNotifier {
         final uri = Uri.parse('http://$_localEspIp/api/status');
         response = await http.get(uri).timeout(const Duration(seconds: 3));
       } else {
-        final uri = Uri.parse('$_databaseUrl/devices/$_deviceId.json');
-        response = await http.get(uri).timeout(const Duration(seconds: 4));
+        try {
+          final uri = Uri.parse('$_databaseUrl/devices/$_deviceId.json');
+          response = await http.get(uri).timeout(const Duration(seconds: 3));
+        } catch (_) {
+          // Cloud failed (no internet) - Try direct local IP fallback!
+          try {
+            final localUri = Uri.parse('http://$_localEspIp/api/status');
+            response = await http.get(localUri).timeout(const Duration(seconds: 2));
+          } catch (_) {
+            rethrow;
+          }
+        }
       }
 
       if (response.statusCode == 200) {
@@ -266,15 +276,21 @@ class FirebaseService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final uri =
-          Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
-      await http
-          .patch(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'solar_backup': enabled}),
-          )
-          .timeout(const Duration(seconds: 4));
+      if (_useLocalEsp) {
+        final uri = Uri.parse(
+            'http://$_localEspIp/api/config?solar=${enabled ? 1 : 0}');
+        await http.get(uri).timeout(const Duration(seconds: 3));
+      } else {
+        final uri =
+            Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
+        await http
+            .patch(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'solar_backup': enabled}),
+            )
+            .timeout(const Duration(seconds: 4));
+      }
 
       final isBn = LocalizationService.instance.isBengali;
       ToastService.instance.success(
@@ -335,17 +351,23 @@ class FirebaseService extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
     try {
-      final uri =
-          Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
-      await http
-          .patch(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'set_timer_minutes': minutes,
-            }),
-          )
-          .timeout(const Duration(seconds: 4));
+      if (_useLocalEsp) {
+        final uri = Uri.parse(
+            'http://$_localEspIp/api/timer?minutes=$minutes');
+        await http.get(uri).timeout(const Duration(seconds: 3));
+      } else {
+        final uri =
+            Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
+        await http
+            .patch(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'set_timer_minutes': minutes,
+              }),
+            )
+            .timeout(const Duration(seconds: 4));
+      }
 
       final isBn = LocalizationService.instance.isBengali;
       if (minutes > 0) {
@@ -376,17 +398,23 @@ class FirebaseService extends ChangeNotifier {
     _optimisticSensorMode = mode;
     notifyListeners();
     try {
-      final uri =
-          Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
-      await http
-          .patch(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'sensor_mode': mode,
-            }),
-          )
-          .timeout(const Duration(seconds: 4));
+      if (_useLocalEsp) {
+        final uri = Uri.parse(
+            'http://$_localEspIp/api/config?sensor=$mode');
+        await http.get(uri).timeout(const Duration(seconds: 3));
+      } else {
+        final uri =
+            Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
+        await http
+            .patch(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'sensor_mode': mode,
+              }),
+            )
+            .timeout(const Duration(seconds: 4));
+      }
 
       final isBn = LocalizationService.instance.isBengali;
       ToastService.instance.success(
@@ -505,7 +533,11 @@ class FirebaseService extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
     try {
-      if (!_useLocalEsp) {
+      if (_useLocalEsp) {
+        final uri = Uri.parse(
+            'http://$_localEspIp/api/config?low=$lowCut&high=$highCut&sensor=$sensorMode&sched=${scheduleEnabled ? 1 : 0}&start=$chargeStartHour&stop=$chargeStopHour');
+        await http.get(uri).timeout(const Duration(seconds: 3));
+      } else {
         final uri =
             Uri.parse('$_databaseUrl/devices/$_deviceId/config.json');
         await http

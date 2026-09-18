@@ -114,14 +114,17 @@ class WeatherService extends ChangeNotifier {
   Timer? _timer;
   WeatherData _current = const WeatherData();
   bool _isLoading = false;
+  bool _hideWeatherCard = false;
 
   BangladeshDistrict get selectedDistrict => _selectedDistrict;
   WeatherData get current => _current;
   bool get isLoading => _isLoading;
+  bool get hideWeatherCard => _hideWeatherCard;
 
   Future<void> _loadSavedDistrict() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _hideWeatherCard = prefs.getBool('hide_weather_card') ?? false;
       final savedName = prefs.getString('weather_district_name');
       if (savedName != null) {
         final match = districts.firstWhere(
@@ -132,6 +135,15 @@ class WeatherService extends ChangeNotifier {
       }
     } catch (_) {}
     fetchWeather();
+  }
+
+  Future<void> setHideWeatherCard(bool hide) async {
+    _hideWeatherCard = hide;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('hide_weather_card', hide);
+    } catch (_) {}
   }
 
   Future<void> setDistrict(BangladeshDistrict district) async {
@@ -203,7 +215,7 @@ class WeatherService extends ChangeNotifier {
       final lat = _selectedDistrict.lat;
       final lon = _selectedDistrict.lon;
       final uri = Uri.parse(
-          'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=cloud_cover,weather_code,is_day');
+          'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=cloud_cover,weather_code,is_day&timezone=auto');
       final res = await http.get(uri).timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -211,31 +223,56 @@ class WeatherService extends ChangeNotifier {
 
         final cloudCover = (currentMap['cloud_cover'] as num?)?.toInt() ?? 0;
         final weatherCode = (currentMap['weather_code'] as num?)?.toInt() ?? 0;
-        final isDay = (currentMap['is_day'] as num?)?.toInt() == 1;
+        final isDayApi = (currentMap['is_day'] as num?)?.toInt() == 1;
 
-        // Cloudy if cloud cover >= 65% or rain/overcast codes
-        final isCloudyCondition = cloudCover >= 65 ||
+        // Double check with local device clock (Bangladesh night is 18:30 to 06:00)
+        final localHour = DateTime.now().hour;
+        final isNightByHour = (localHour >= 19 || localHour < 6);
+        final effectiveIsDay = isDayApi && !isNightByHour;
+
+        // Cloudy daytime only applies when it is actually day
+        final isCloudyCondition = effectiveIsDay && (cloudCover >= 65 ||
             weatherCode == 2 ||
             weatherCode == 3 ||
             weatherCode == 45 ||
             (weatherCode >= 51 && weatherCode <= 67) ||
-            (weatherCode >= 80 && weatherCode <= 82);
+            (weatherCode >= 80 && weatherCode <= 82));
 
-        String cond = 'Sunny';
-        if (cloudCover >= 80) {
-          cond = 'Overcast';
-        } else if (cloudCover >= 50) {
-          cond = 'Cloudy';
-        } else if (cloudCover >= 20) {
-          cond = 'Partly Cloudy';
+        String cond;
+        if (!effectiveIsDay) {
+          if (weatherCode >= 51 && weatherCode <= 67) {
+            cond = 'Rainy Night';
+          } else if (weatherCode == 45 || weatherCode == 48) {
+            cond = 'Foggy Night';
+          } else if (cloudCover >= 75) {
+            cond = 'Overcast Night';
+          } else if (cloudCover >= 40) {
+            cond = 'Cloudy Night';
+          } else if (cloudCover >= 15) {
+            cond = 'Partly Cloudy Night';
+          } else {
+            cond = 'Clear Night';
+          }
+        } else {
+          if (weatherCode >= 51 && weatherCode <= 67) {
+            cond = 'Rainy';
+          } else if (weatherCode == 45 || weatherCode == 48) {
+            cond = 'Foggy / Winter Haze';
+          } else if (cloudCover >= 75) {
+            cond = 'Overcast';
+          } else if (cloudCover >= 45) {
+            cond = 'Cloudy';
+          } else if (cloudCover >= 15) {
+            cond = 'Partly Cloudy';
+          } else {
+            cond = 'Sunny';
+          }
         }
-        if (weatherCode >= 51 && weatherCode <= 67) cond = 'Rainy';
-        if (weatherCode == 45 || weatherCode == 48) cond = 'Foggy / Winter Haze';
 
         _current = WeatherData(
           cloudCover: cloudCover,
           weatherCode: weatherCode,
-          isDay: isDay,
+          isDay: effectiveIsDay,
           isCloudy: isCloudyCondition,
           conditionText: cond,
           districtName: _selectedDistrict.nameEn,

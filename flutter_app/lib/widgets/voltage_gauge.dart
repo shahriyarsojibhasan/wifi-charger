@@ -303,6 +303,40 @@ class _VoltageGaugeState extends State<VoltageGauge>
   /// NO SENSOR MODE: Dedicated Smart Solar & Schedule Hub UI
   Widget _buildSmartSolarHub(LocalizationService loc, bool isBn) {
     final weather = WeatherService.instance.current;
+    final hideCard = WeatherService.instance.hideWeatherCard;
+
+    Color weatherBg;
+    Color weatherBorder;
+    Color weatherText;
+    Color iconColor;
+    IconData weatherIcon;
+    String statusTitle;
+
+    if (!weather.isDay) {
+      // Night Time: Solar Inactive, Night Window Applies
+      weatherBg = const Color(0xFF303F9F).withValues(alpha: 0.14);
+      weatherBorder = const Color(0xFF536DFE).withValues(alpha: 0.35);
+      weatherText = const Color(0xFF8C9EFF);
+      iconColor = const Color(0xFF8C9EFF);
+      weatherIcon = Icons.nightlight_round;
+      statusTitle = loc.tr('night_solar');
+    } else if (weather.isCloudy) {
+      // Daytime: Cloudy / AC Backup Active
+      weatherBg = const Color(0xFFFF9100).withValues(alpha: 0.12);
+      weatherBorder = const Color(0xFFFF9100).withValues(alpha: 0.3);
+      weatherText = const Color(0xFFFFAB40);
+      iconColor = const Color(0xFFFF9100);
+      weatherIcon = Icons.cloud_queue;
+      statusTitle = loc.tr('cloudy_solar');
+    } else {
+      // Daytime: Sunny / Solar Optimal
+      weatherBg = const Color(0xFF00E5FF).withValues(alpha: 0.10);
+      weatherBorder = const Color(0xFF00E5FF).withValues(alpha: 0.25);
+      weatherText = const Color(0xFF00E676);
+      iconColor = const Color(0xFFFFD600);
+      weatherIcon = Icons.wb_sunny_rounded;
+      statusTitle = loc.tr('sunny_solar');
+    }
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -313,94 +347,87 @@ class _VoltageGaugeState extends State<VoltageGauge>
       ),
       child: Column(
         children: [
-          // Solar Weather & Daytime Row
-          Row(
-            children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: weather.isCloudy
-                        ? const Color(0xFFFF9100).withValues(alpha: 0.12)
-                        : const Color(0xFF00E5FF).withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: weather.isCloudy
-                          ? const Color(0xFFFF9100).withValues(alpha: 0.3)
-                          : const Color(0xFF00E5FF).withValues(alpha: 0.25),
+          // Solar Weather & Daytime Row (Hidden if user selected Hide Weather Card)
+          if (!hideCard) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: weatherBg,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: weatherBorder),
                     ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(
-                                weather.isCloudy ? Icons.cloud_queue : Icons.wb_sunny_rounded,
-                                color: weather.isCloudy ? const Color(0xFFFF9100) : const Color(0xFFFFD600),
-                                size: 15,
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                loc.tr('solar_status'),
-                                style: const TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                          // Clickable District Pill
-                          InkWell(
-                            onTap: () => _showDistrictPicker(context, loc),
-                            borderRadius: BorderRadius.circular(8),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.08),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.3)),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.location_on, color: Color(0xFF00E5FF), size: 11),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    isBn ? WeatherService.instance.selectedDistrict.nameBn : WeatherService.instance.selectedDistrict.nameEn,
-                                    style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 9.5, fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(width: 2),
-                                  const Icon(Icons.arrow_drop_down, color: Colors.white54, size: 12),
-                                ],
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(weatherIcon, color: iconColor, size: 15),
+                                const SizedBox(width: 6),
+                                Text(
+                                  loc.tr('solar_status'),
+                                  style: const TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                            // Clickable District Pill
+                            InkWell(
+                              onTap: () => _showDistrictPicker(context, loc),
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: const Color(0xFF00E5FF).withValues(alpha: 0.3)),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.location_on, color: Color(0xFF00E5FF), size: 11),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      isBn
+                                          ? WeatherService.instance.selectedDistrict.nameBn
+                                          : WeatherService.instance.selectedDistrict.nameEn,
+                                      style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 9.5, fontWeight: FontWeight.bold),
+                                    ),
+                                    const SizedBox(width: 2),
+                                    const Icon(Icons.arrow_drop_down, color: Colors.white54, size: 12),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        weather.isCloudy ? loc.tr('cloudy_solar') : loc.tr('sunny_solar'),
-                        style: TextStyle(
-                          color: weather.isCloudy ? const Color(0xFFFFAB40) : const Color(0xFF00E676),
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
+                          ],
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        '${loc.tr('cloud_cover')}: ${weather.cloudCover}% (${weather.conditionText})',
-                        style: const TextStyle(color: Colors.white38, fontSize: 9.5),
-                      ),
-                    ],
+                        const SizedBox(height: 4),
+                        Text(
+                          statusTitle,
+                          style: TextStyle(
+                            color: weatherText,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          '${loc.tr('cloud_cover')}: ${weather.cloudCover}% (${weather.conditionText})',
+                          style: const TextStyle(color: Colors.white38, fontSize: 9.5),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 12),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
 
           // Active Charging / Standby Flow Card
           Row(

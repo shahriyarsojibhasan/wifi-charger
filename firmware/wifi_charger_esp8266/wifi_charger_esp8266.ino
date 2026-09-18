@@ -34,7 +34,7 @@ const int RELAY_INACTIVE  = HIGH; // HIGH de-energizes coil (Charger OFF)
 // ====================================================================================================
 // PERSISTENT STORAGE (EEPROM) CONFIGURATION
 // ====================================================================================================
-#define EEPROM_MAGIC_NUMBER 0x56504C33 // "VPL3" magic marker for v3.0
+#define EEPROM_MAGIC_NUMBER 0x56504C34 // "VPL4" pure captive portal default
 #define EEPROM_SIZE 512
 
 struct DeviceConfig {
@@ -119,8 +119,8 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("\n\n========================================================");
-  Serial.println("  VoltPulse Smart 12V Battery & Solar Hub (Firmware v3.0)");
-  Serial.println("  Default Wi-Fi: SSID 'NO NET' | Pass '09999999'        ");
+  Serial.println("  VoltPulse Smart 12V Battery & Solar Hub (Firmware v3.1)");
+  Serial.println("  Provisioning: Pure Captive Portal (WiFi-Charger-Setup) ");
   Serial.println("========================================================");
 
   // Safe boot sequence: Optocoupler remains HIGH/Inactive
@@ -146,8 +146,6 @@ void setup() {
 void loop() {
   if (isPortalActive) {
     dnsServer.processNextRequest();
-    server.handleClient();
-    return;
   }
 
   server.handleClient();
@@ -199,7 +197,47 @@ void loop() {
     savePersistentConfig();
   }
 
-  // Cloud Synchronization (every 3 seconds)
+  // Wi-Fi Connection Monitor & Smart Hotspot Controller
+  static unsigned long lastWifiCheck = 0;
+  static unsigned long wifiDisconnectedStart = 0;
+  static unsigned long lastReconnectAttempt = 0;
+
+  if (now - lastWifiCheck >= 1000) {
+    lastWifiCheck = now;
+
+    if (WiFi.status() == WL_CONNECTED) {
+      wifiDisconnectedStart = 0;
+      if (isPortalActive) {
+        // Router reconnected! Shut down hotspot completely
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+        isPortalActive = false;
+        isWifiConnected = true;
+        Serial.println("[WIFI] Reconnected to router! Hotspot 'WiFi-Charger-Setup' disabled.");
+      }
+    } else {
+      // Disconnected from Wi-Fi router
+      if (wifiDisconnectedStart == 0) {
+        wifiDisconnectedStart = now;
+      } else if (!isPortalActive && (now - wifiDisconnectedStart >= 25000)) {
+        // Disconnected for more than 25 seconds: Launch fallback hotspot
+        Serial.println("[WIFI] Disconnected > 25s! Starting fallback hotspot 'WiFi-Charger-Setup'...");
+        isPortalActive = true;
+        WiFi.mode(WIFI_AP_STA);
+        WiFi.softAP("WiFi-Charger-Setup", "12345678");
+        dnsServer.start(53, "*", WiFi.softAPIP());
+      }
+
+      // Try background reconnect to saved router every 30s while in AP mode
+      if (isPortalActive && strlen(sysConfig.wifi_ssid) > 0 && (now - lastReconnectAttempt >= 30000)) {
+        lastReconnectAttempt = now;
+        Serial.printf("[WIFI] Attempting background reconnect to '%s'...\n", sysConfig.wifi_ssid);
+        WiFi.begin(sysConfig.wifi_ssid, sysConfig.wifi_pass);
+      }
+    }
+  }
+
+  // Cloud Synchronization (every 3 seconds when connected)
   if (WiFi.status() == WL_CONNECTED) {
     if (now - lastCloudSync >= 3000) {
       lastCloudSync = now;
@@ -410,11 +448,11 @@ void loadPersistentConfig() {
   EEPROM.get(0, sysConfig);
 
   if (sysConfig.magic != EEPROM_MAGIC_NUMBER) {
-    Serial.println("[EEPROM] Initializing v3.0 default parameters...");
+    Serial.println("[EEPROM] Initializing v3.1 default parameters (Pure Captive Portal)...");
     sysConfig.magic = EEPROM_MAGIC_NUMBER;
-    // Default requested: SSID "NO NET" | Pass "09999999"
-    strncpy(sysConfig.wifi_ssid, "NO NET", sizeof(sysConfig.wifi_ssid));
-    strncpy(sysConfig.wifi_pass, "09999999", sizeof(sysConfig.wifi_pass));
+    // Pure captive portal on first boot: no hardcoded credentials
+    memset(sysConfig.wifi_ssid, 0, sizeof(sysConfig.wifi_ssid));
+    memset(sysConfig.wifi_pass, 0, sizeof(sysConfig.wifi_pass));
     strncpy(sysConfig.firebase_host, "https://wifi-charger-esp-9644-default-rtdb.firebaseio.com", sizeof(sysConfig.firebase_host));
     memset(sysConfig.firebase_auth, 0, sizeof(sysConfig.firebase_auth));
     strncpy(sysConfig.device_id, "wifi_charger_01", sizeof(sysConfig.device_id));
@@ -468,8 +506,12 @@ void startWiFiOrProvisioning() {
       Serial.println("\n[WIFI] Connected Successfully!");
       Serial.print("[WIFI] IP: http://");
       Serial.println(WiFi.localIP());
-      configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET, "pool.ntp.org", "time.google.com");
+      // Explicitly turn off AP when connected to router
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      isPortalActive = false;
       isWifiConnected = true;
+      configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET, "pool.ntp.org", "time.google.com");
       return;
     }
     Serial.println("\n[WIFI] Connection failed. Starting Captive Portal hotspot.");
@@ -480,7 +522,7 @@ void startWiFiOrProvisioning() {
 
 void setupCaptivePortal() {
   isPortalActive = true;
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP("WiFi-Charger-Setup", "12345678");
 
   dnsServer.start(53, "*", WiFi.softAPIP());
@@ -530,8 +572,19 @@ void setupCaptivePortal() {
   });
 
   server.onNotFound([]() {
-    server.sendHeader("Location", "http://192.168.4.1/", true);
-    server.send(302, "text/plain", "");
+    if (server.method() == HTTP_OPTIONS) {
+      server.sendHeader("Access-Control-Allow-Origin", "*");
+      server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      server.sendHeader("Access-Control-Allow-Headers", "*");
+      server.send(204);
+      return;
+    }
+    if (isPortalActive) {
+      server.sendHeader("Location", "http://192.168.4.1/", true);
+      server.send(302, "text/plain", "");
+      return;
+    }
+    server.send(404, "text/plain", "Not Found");
   });
 }
 
@@ -555,7 +608,7 @@ void connectToNewWifi(const char* ssid, const char* pass) {
 }
 
 // ====================================================================================================
-// 8. LOCAL WEB SERVER & REST API
+// 8. LOCAL WEB SERVER & REST API (With Offline Direct HTTP Support)
 // ====================================================================================================
 void setupLocalWebServer() {
   server.on("/api/set_wifi", HTTP_GET, []() {
@@ -607,6 +660,36 @@ void setupLocalWebServer() {
     server.send(200, "application/json", "{\"success\":true}");
   });
 
+  server.on("/api/timer", HTTP_GET, []() {
+    if (server.hasArg("minutes")) {
+      int m = server.arg("minutes").toInt();
+      if (m > 0) {
+        sysConfig.timer_active = true;
+        sysConfig.timer_remaining_seconds = m * 60;
+        digitalWrite(PIN_RELAY, RELAY_ACTIVE);
+        isRelayOn = true;
+      } else {
+        sysConfig.timer_active = false;
+        sysConfig.timer_remaining_seconds = 0;
+      }
+      savePersistentConfig();
+    }
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", "{\"success\":true}");
+  });
+
+  server.on("/api/config", HTTP_GET, []() {
+    if (server.hasArg("low")) sysConfig.low_cut_voltage = server.arg("low").toFloat();
+    if (server.hasArg("high")) sysConfig.high_cut_voltage = server.arg("high").toFloat();
+    if (server.hasArg("sensor")) sysConfig.sensor_mode = server.arg("sensor").toInt();
+    if (server.hasArg("solar")) sysConfig.solar_backup_enabled = (server.arg("solar") == "1");
+    if (server.hasArg("watt")) sysConfig.charger_watt = server.arg("watt").toFloat();
+    if (server.hasArg("rate")) sysConfig.electricity_rate = server.arg("rate").toFloat();
+    savePersistentConfig();
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", "{\"success\":true}");
+  });
+
   server.on("/api/status", HTTP_GET, []() {
     float totalHours = (float)sysConfig.total_charging_seconds / 3600.0;
     float estKwh = (totalHours * sysConfig.charger_watt) / 1000.0;
@@ -615,6 +698,8 @@ void setupLocalWebServer() {
     float weatherHours = (float)sysConfig.weather_charging_seconds / 3600.0;
     float weatherKwh = (weatherHours * sysConfig.charger_watt) / 1000.0;
     float weatherCost = weatherKwh * sysConfig.electricity_rate;
+
+    String devIp = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
 
     String json = "{";
     json += "\"telemetry\":{";
@@ -628,7 +713,7 @@ void setupLocalWebServer() {
     json += "\"timer_remaining_seconds\":" + String(sysConfig.timer_remaining_seconds) + ",";
     json += "\"uptime_secs\":" + String(millis() / 1000) + ",";
     json += "\"heartbeat_seq\":" + String(++heartbeatSeq) + ",";
-    json += "\"device_ip\":\"" + WiFi.localIP().toString() + "\",";
+    json += "\"device_ip\":\"" + devIp + "\",";
     json += "\"wifi_rssi\":" + String(WiFi.RSSI()) + ",";
     json += "\"last_updated\":" + String(millis() / 1000);
     json += "},";
