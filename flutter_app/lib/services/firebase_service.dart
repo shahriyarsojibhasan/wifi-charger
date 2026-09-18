@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import '../models/charger_data.dart';
 import 'toast_service.dart';
 import 'localization_service.dart';
+import 'weather_service.dart';
 
 class FirebaseService extends ChangeNotifier {
   String _databaseUrl =
@@ -27,12 +28,14 @@ class FirebaseService extends ChangeNotifier {
   DateTime? _lastFreshDataTime;
   int _stagnantHeartbeatCount = 0;
 
-  // Optimistic UI state — instant feedback before server confirms
+  // Optimistic UI state
   bool? _optimisticRelayState;
   bool? _optimisticAutoMode;
+  bool? _optimisticSolarBackup;
   int? _optimisticSensorMode;
 
   Timer? _pollTimer;
+  DateTime? _lastWeatherSync;
 
   ChargerData get data => _data;
   String get deviceId => _deviceId;
@@ -46,15 +49,19 @@ class FirebaseService extends ChangeNotifier {
   String get localEspIp => _localEspIp;
   bool get useLocalEsp => _useLocalEsp;
 
-  /// Merged view: returns optimistic override if pending, else real data
   bool get displayRelayState =>
       _optimisticRelayState ?? _data.relayState;
   bool get displayAutoMode =>
       _optimisticAutoMode ?? _data.autoMode;
+  bool get displaySolarBackup =>
+      _optimisticSolarBackup ?? _data.solarBackupEnabled;
   int get displaySensorMode =>
       _optimisticSensorMode ?? _data.sensorMode;
 
   FirebaseService() {
+    WeatherService.instance.onWeatherUpdated = (w) {
+      syncWeatherToCloud(w);
+    };
     startSync();
   }
 
@@ -119,7 +126,7 @@ class FirebaseService extends ChangeNotifier {
           _consecutiveFailures = 0;
           _lastError = '';
 
-          // ── HEARTBEAT FRESHNESS CHECK ──
+          // Heartbeat freshness
           final newUptime = parsedData.uptimeSecs;
           final newSeq = parsedData.heartbeatSeq;
 
@@ -129,20 +136,17 @@ class FirebaseService extends ChangeNotifier {
             _lastFreshDataTime = DateTime.now();
             _isNodeMcuAlive = true;
           } else if (newUptime != _lastUptime || (newSeq != _lastHeartbeatSeq && newSeq > 0)) {
-            // Heartbeat advanced — NodeMCU is actively alive!
             _lastUptime = newUptime;
             _lastHeartbeatSeq = newSeq;
             _lastFreshDataTime = DateTime.now();
             _stagnantHeartbeatCount = 0;
             _isNodeMcuAlive = true;
           } else {
-            // Data hasn't changed
             _stagnantHeartbeatCount++;
             final elapsed = _lastFreshDataTime != null
                 ? DateTime.now().difference(_lastFreshDataTime!).inSeconds
                 : 99;
 
-            // If stagnant for > 8 seconds, mark NodeMCU as powered off / offline
             if (elapsed >= 8 || _stagnantHeartbeatCount >= 7) {
               final wasAlive = _isNodeMcuAlive;
               _isNodeMcuAlive = false;
@@ -157,10 +161,13 @@ class FirebaseService extends ChangeNotifier {
             }
           }
 
-          // Clear optimistic flags once verified
           _optimisticRelayState = null;
           _optimisticAutoMode = null;
+          _optimisticSolarBackup = null;
           _optimisticSensorMode = null;
+
+          // Sync weather condition periodically (every 5 minutes)
+          _maybeSyncWeather();
         }
       } else {
         _handleFailure('Server ${response.statusCode}');
@@ -169,6 +176,36 @@ class FirebaseService extends ChangeNotifier {
       _handleFailure(e.toString().replaceAll('Exception: ', ''));
     }
     notifyListeners();
+  }
+
+  void _maybeSyncWeather() {
+    final now = DateTime.now();
+    if (_lastWeatherSync == null || now.difference(_lastWeatherSync!).inMinutes >= 5) {
+      _lastWeatherSync = now;
+      final w = WeatherService.instance.current;
+      syncWeatherToCloud(w);
+    }
+  }
+
+  Future<void> syncWeatherToCloud(WeatherData w) async {
+    if (_useLocalEsp) return;
+    try {
+      final uri = Uri.parse('$_databaseUrl/devices/$_deviceId/weather.json');
+      await http
+          .patch(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'cloud_cover': w.cloudCover,
+              'is_cloudy': w.isCloudy,
+              'is_day': w.isDay,
+              'condition': w.conditionText,
+              'district': w.districtName,
+              'updated_at': DateTime.now().toIso8601String(),
+            }),
+          )
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {}
   }
 
   void _handleFailure(String reason) {
@@ -224,6 +261,37 @@ class FirebaseService extends ChangeNotifier {
     }
   }
 
+  Future<bool> setSolarBackupMode(bool enabled) async {
+    _optimisticSolarBackup = enabled;
+    notifyListeners();
+
+    try {
+      final uri =
+          Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
+      await http
+          .patch(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'solar_backup': enabled}),
+          )
+          .timeout(const Duration(seconds: 4));
+
+      final isBn = LocalizationService.instance.isBengali;
+      ToastService.instance.success(
+        enabled
+            ? (isBn ? 'সোলার মেঘলা দিন ব্যাকআপ চালু ✓' : 'Solar cloudy backup enabled ✓')
+            : (isBn ? 'সোলার ব্যাকআপ বন্ধ করা হয়েছে' : 'Solar backup disabled'),
+      );
+      await fetchData();
+      return true;
+    } catch (e) {
+      _optimisticSolarBackup = null;
+      _lastError = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> setRelayManual(bool state) async {
     _optimisticRelayState = state;
     notifyListeners();
@@ -263,7 +331,6 @@ class FirebaseService extends ChangeNotifier {
     }
   }
 
-  /// Sets countdown timer in minutes (e.g. 30, 60, 120, 240) or 0 to cancel
   Future<bool> setTimer(int minutes) async {
     _isLoading = true;
     notifyListeners();
@@ -305,7 +372,6 @@ class FirebaseService extends ChangeNotifier {
     }
   }
 
-  /// Updates sensor mode (0: None, 1: 100k/10k, 2: 0-25V Module)
   Future<bool> setSensorMode(int mode) async {
     _optimisticSensorMode = mode;
     notifyListeners();
@@ -337,7 +403,55 @@ class FirebaseService extends ChangeNotifier {
     }
   }
 
-  /// Remotely resets Wi-Fi and triggers NodeMCU captive portal
+  /// Live update of Wi-Fi credentials without requiring factory reset
+  Future<bool> updateWifiCredentials({
+    required String ssid,
+    required String pass,
+    bool hidden = false,
+  }) async {
+    _isLoading = true;
+    notifyListeners();
+    try {
+      if (_useLocalEsp) {
+        final uri = Uri.parse(
+            'http://$_localEspIp/api/set_wifi?ssid=${Uri.encodeComponent(ssid)}&pass=${Uri.encodeComponent(pass)}&hidden=${hidden ? 1 : 0}');
+        await http.get(uri).timeout(const Duration(seconds: 3));
+      } else {
+        final uri =
+            Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
+        await http
+            .patch(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'new_wifi': {
+                  'ssid': ssid,
+                  'pass': pass,
+                  'hidden': hidden,
+                },
+              }),
+            )
+            .timeout(const Duration(seconds: 4));
+      }
+
+      final isBn = LocalizationService.instance.isBengali;
+      ToastService.instance.success(
+        isBn
+            ? 'ওয়াইফাই আপডেট পাঠানো হয়েছে! নোডএমসিইউ কানেক্ট করছে...'
+            : 'New Wi-Fi sent! NodeMCU connecting...',
+      );
+      _isLoading = false;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _isLoading = false;
+      _lastError = e.toString();
+      notifyListeners();
+      ToastService.instance.error('Failed to update Wi-Fi.');
+      return false;
+    }
+  }
+
   Future<bool> triggerWifiReset() async {
     _isLoading = true;
     notifyListeners();
@@ -413,7 +527,6 @@ class FirebaseService extends ChangeNotifier {
             )
             .timeout(const Duration(seconds: 4));
 
-        // Also inform commands
         final cmdUri =
             Uri.parse('$_databaseUrl/devices/$_deviceId/commands.json');
         await http
@@ -459,8 +572,11 @@ class FirebaseService extends ChangeNotifier {
                 'manual_on_seconds': 0,
                 'today_seconds': 0,
                 'total_seconds': 0,
+                'weather_charge_seconds': 0,
                 'estimated_kwh': 0.0,
                 'estimated_bdt': 0.0,
+                'weather_estimated_kwh': 0.0,
+                'weather_estimated_bdt': 0.0,
               }),
             )
             .timeout(const Duration(seconds: 4));

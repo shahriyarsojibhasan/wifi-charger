@@ -5,6 +5,7 @@ import 'services/firebase_service.dart';
 import 'services/toast_service.dart';
 import 'services/localization_service.dart';
 import 'services/pwa_service.dart';
+import 'widgets/auth_gate.dart';
 import 'widgets/voltage_gauge.dart';
 import 'widgets/stat_card.dart';
 import 'widgets/control_panel.dart';
@@ -57,7 +58,11 @@ class _WifiChargerAppState extends State<WifiChargerApp> {
           surface: Color(0xFF131828),
         ),
       ),
-      home: const ToastOverlay(child: DashboardScreen()),
+      home: const ToastOverlay(
+        child: AuthGate(
+          child: DashboardScreen(),
+        ),
+      ),
     );
   }
 }
@@ -256,7 +261,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: _buildAppBar(isCloud, isAlive, waiting, loc),
       body: Stack(
         children: [
-          // Ambient background glow
           Positioned.fill(
             child: DecoratedBox(
               decoration: BoxDecoration(
@@ -274,18 +278,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           LayoutBuilder(
             builder: (context, constraints) {
-              final isWide = constraints.maxWidth > 900;
-              final pad = constraints.maxWidth < 450 ? 12.0 : 20.0;
+              final isWide = constraints.maxWidth > 850;
+              final pad = constraints.maxWidth < 450 ? 10.0 : 18.0;
 
               return SingleChildScrollView(
                 padding: EdgeInsets.all(pad),
                 child: Center(
                   child: Container(
-                    constraints: const BoxConstraints(maxWidth: 1200),
+                    constraints: const BoxConstraints(maxWidth: 1150),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // ── CONNECTIVITY BANNERS ──
+                        // Connectivity Warning
                         if (!isCloud)
                           _buildCloudOfflineBanner(loc)
                         else if (!isAlive && !waiting)
@@ -294,7 +298,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         if (waiting && isCloud)
                           _buildWaitingBanner(loc),
 
-                        // ── MAIN CONTENT (GAUGE + CONTROLLER) ──
+                        // Main Content: Gauge / Solar Hub + Controller
                         if (isWide)
                           IntrinsicHeight(
                             child: Row(
@@ -308,10 +312,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     highCut: data.highCut,
                                     isCharging: isRelayOn,
                                     sensorMode: _service.displaySensorMode,
+                                    isSensorDisconnected: data.sensorDisconnected,
                                     sessionSeconds: data.currentSessionSeconds,
+                                    isScheduleWindow: data.isScheduleWindow,
                                   ),
                                 ),
-                                const SizedBox(width: 20),
+                                const SizedBox(width: 16),
                                 Expanded(
                                   flex: 6,
                                   child: ControlPanel(service: _service),
@@ -326,13 +332,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             highCut: data.highCut,
                             isCharging: isRelayOn,
                             sensorMode: _service.displaySensorMode,
+                            isSensorDisconnected: data.sensorDisconnected,
                             sessionSeconds: data.currentSessionSeconds,
+                            isScheduleWindow: data.isScheduleWindow,
                           ),
-                          const SizedBox(height: 14),
+                          const SizedBox(height: 12),
                           ControlPanel(service: _service),
                         ],
 
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 20),
 
                         // ── STATS HEADING ──
                         Row(
@@ -340,35 +348,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           children: [
                             Row(
                               children: [
-                                const Icon(Icons.analytics_outlined, color: Color(0xFF00E5FF), size: 18),
+                                const Icon(Icons.analytics_outlined, color: Color(0xFF00E5FF), size: 17),
                                 const SizedBox(width: 8),
                                 Text(
                                   loc.tr('stats_title'),
-                                  style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                  style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.bold),
                                 ),
                               ],
                             ),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                               decoration: BoxDecoration(
                                 color: Colors.white.withValues(alpha: 0.05),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
-                                '${loc.tr('tariff_label')}: ${data.kwhRateBdt.toStringAsFixed(1)} Tk/kWh',
-                                style: const TextStyle(color: Colors.white54, fontSize: 11),
+                                '${loc.tr('tariff_label')}: ${data.kwhRateBdt.toStringAsFixed(1)} Tk/u',
+                                style: const TextStyle(color: Colors.white54, fontSize: 10.5),
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 10),
 
                         // ── STAT CARDS GRID ──
                         GridView.count(
-                          crossAxisCount: isWide ? 4 : (constraints.maxWidth > 550 ? 2 : 2),
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                          childAspectRatio: isWide ? 1.35 : 1.45,
+                          crossAxisCount: isWide ? 4 : (constraints.maxWidth > 500 ? 2 : 2),
+                          crossAxisSpacing: 10,
+                          mainAxisSpacing: 10,
+                          childAspectRatio: isWide ? 1.4 : 1.35,
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
                           children: [
@@ -394,10 +402,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               subtitle: loc.tr('saved_memory'),
                               icon: Icons.history,
                               accentColor: const Color(0xFFFFAB40),
-                              trailing: const Tooltip(
-                                message: 'Saved in NodeMCU flash memory',
-                                child: Icon(Icons.cloud_done, size: 16, color: Color(0xFFFFAB40)),
-                              ),
                             ),
                             StatCard(
                               title: loc.tr('energy_used'),
@@ -409,17 +413,100 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ],
                         ),
 
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 12),
 
-                        // ── COST BANNER ──
+                        // ── SOLAR CLOUDY WEATHER & 6-MONTH BILL CARDS ──
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFF9100).withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: const Color(0xFFFF9100).withValues(alpha: 0.25)),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Icon(Icons.wb_cloudy_outlined, color: Color(0xFFFFAB40), size: 16),
+                                        const SizedBox(width: 6),
+                                        Flexible(
+                                          child: Text(
+                                            loc.tr('weather_bill'),
+                                            style: const TextStyle(color: Color(0xFFFFAB40), fontSize: 11, fontWeight: FontWeight.bold),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '৳ ${data.weatherEstimatedBdt.toStringAsFixed(2)}',
+                                      style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900),
+                                    ),
+                                    Text(
+                                      '${data.weatherEstimatedKwh.toStringAsFixed(3)} kWh (${(data.weatherChargeSeconds / 60).toStringAsFixed(0)} min)',
+                                      style: const TextStyle(color: Colors.white38, fontSize: 9.5),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF7C4DFF).withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: const Color(0xFF7C4DFF).withValues(alpha: 0.25)),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Icon(Icons.calendar_month_outlined, color: Color(0xFFB388FF), size: 16),
+                                        const SizedBox(width: 6),
+                                        Flexible(
+                                          child: Text(
+                                            loc.tr('six_month_bill'),
+                                            style: const TextStyle(color: Color(0xFFB388FF), fontSize: 11, fontWeight: FontWeight.bold),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '≈ ৳ ${data.sixMonthEstimatedBdt.toStringAsFixed(0)}',
+                                      style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900),
+                                    ),
+                                    Text(
+                                      isBn ? 'প্রতি ৬ মাসের মোট সম্ভাব্য খরচ' : 'Projected 6-month budget',
+                                      style: const TextStyle(color: Colors.white38, fontSize: 9.5),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 12),
+
+                        // ── TOTAL BILL BANNER ──
                         _buildCostBanner(data, loc),
 
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 12),
 
-                        // ── LAST UPDATE FOOTER ──
+                        // ── FOOTER ──
                         _buildFooter(data, isAlive, loc),
 
-                        const SizedBox(height: 20),
+                        const SizedBox(height: 16),
                       ],
                     ),
                   ),
@@ -448,20 +535,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return AppBar(
       backgroundColor: const Color(0xFF0D1120),
       elevation: 0,
-      titleSpacing: 12,
+      titleSpacing: 10,
       title: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
               gradient: const LinearGradient(
                 colors: [Color(0xFF00E5FF), Color(0xFF00B0FF)],
               ),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.battery_charging_full, color: Colors.black, size: 20),
+            child: const Icon(Icons.bolt, color: Colors.black, size: 18),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -469,12 +556,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Text(
                   loc.tr('app_title'),
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
                   loc.tr('app_subtitle'),
-                  style: const TextStyle(fontSize: 10, color: Colors.white38),
+                  style: const TextStyle(fontSize: 9.5, color: Colors.white38),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
@@ -482,13 +570,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
       actions: [
-        // ── LANGUAGE SWITCHER TOGGLE (EN | বাংলা) ──
+        // Language switcher
         Container(
-          margin: const EdgeInsets.symmetric(vertical: 10),
+          margin: const EdgeInsets.symmetric(vertical: 11),
           padding: const EdgeInsets.symmetric(horizontal: 2),
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(color: Colors.white12),
           ),
           child: Row(
@@ -496,38 +584,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               InkWell(
                 onTap: () => loc.setLanguage(AppLanguage.en),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(14),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                     color: !loc.isBengali ? const Color(0xFF00E5FF) : Colors.transparent,
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(14),
                   ),
                   child: Text(
                     'EN',
                     style: TextStyle(
                       color: !loc.isBengali ? Colors.black : Colors.white60,
                       fontWeight: FontWeight.bold,
-                      fontSize: 11,
+                      fontSize: 10.5,
                     ),
                   ),
                 ),
               ),
               InkWell(
                 onTap: () => loc.setLanguage(AppLanguage.bn),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(14),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                     color: loc.isBengali ? const Color(0xFF00E676) : Colors.transparent,
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(14),
                   ),
                   child: Text(
                     'বাংলা',
                     style: TextStyle(
                       color: loc.isBengali ? Colors.black : Colors.white60,
                       fontWeight: FontWeight.bold,
-                      fontSize: 11,
+                      fontSize: 10.5,
                     ),
                   ),
                 ),
@@ -535,11 +623,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
         ),
-        const SizedBox(width: 6),
+        const SizedBox(width: 4),
 
-        // ── PWA INSTALL BUTTON (CHROME / DESKTOP) ──
+        // PWA Install Button
         IconButton(
-          icon: const Icon(Icons.install_mobile_rounded, color: Color(0xFF00E5FF), size: 20),
+          icon: const Icon(Icons.install_mobile_rounded, color: Color(0xFF00E5FF), size: 19),
           tooltip: loc.tr('install_app_tooltip'),
           onPressed: () async {
             final accepted = await PwaService.instance.promptInstall();
@@ -557,28 +645,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
           },
         ),
 
-        // ── NODE MCU ONLINE / POWER OFF STATUS PILL ──
+        // Status Pill
         Center(
           child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
               color: statusColor.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(color: statusColor.withValues(alpha: 0.4)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _PulsingDot(color: statusColor),
-                const SizedBox(width: 5),
+                const SizedBox(width: 4),
                 Text(
                   statusText,
                   style: TextStyle(
                     color: statusColor,
-                    fontSize: 10.5,
+                    fontSize: 10,
                     fontWeight: FontWeight.bold,
-                    letterSpacing: 0.6,
+                    letterSpacing: 0.5,
                   ),
                 ),
               ],
@@ -586,47 +674,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ),
 
-        // Refresh Button
-        IconButton(
-          icon: const Icon(Icons.refresh_rounded, color: Colors.white54, size: 20),
-          tooltip: loc.tr('refresh'),
-          onPressed: () {
-            _service.fetchData();
-            ToastService.instance.info(loc.tr('refresh'));
-          },
-        ),
-
         // Settings Dialog Button
         IconButton(
-          icon: const Icon(Icons.settings_outlined, color: Colors.white54, size: 20),
+          icon: const Icon(Icons.settings_outlined, color: Colors.white54, size: 19),
           tooltip: loc.tr('settings_title'),
           onPressed: () => showDialog(
             context: context,
             builder: (_) => SettingsDialog(service: _service),
           ),
         ),
-        const SizedBox(width: 4),
+        const SizedBox(width: 2),
       ],
     );
   }
 
   Widget _buildNodeMcuOfflineBanner(LocalizationService loc) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xFFFF5252).withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFFF5252).withValues(alpha: 0.4)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.power_off_rounded, color: Color(0xFFFF5252), size: 20),
-          const SizedBox(width: 10),
+          const Icon(Icons.power_off_rounded, color: Color(0xFFFF5252), size: 18),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               loc.tr('nodemcu_power_off_warning'),
-              style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 12, height: 1.3),
+              style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 11.5, height: 1.3),
             ),
           ),
         ],
@@ -636,21 +714,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildCloudOfflineBanner(LocalizationService loc) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xFFFF5252).withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFFF5252).withValues(alpha: 0.4)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.cloud_off, color: Color(0xFFFF5252), size: 20),
-          const SizedBox(width: 10),
+          const Icon(Icons.cloud_off, color: Color(0xFFFF5252), size: 18),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Server disconnected — ${_service.lastError}. Check internet connection.',
-              style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 12),
+              'Server disconnected — ${_service.lastError}',
+              style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 11.5),
             ),
           ),
         ],
@@ -660,23 +738,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildWaitingBanner(LocalizationService loc) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFFFFAB40).withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFFFAB40).withValues(alpha: 0.3)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.sync_rounded, color: Color(0xFFFFAB40), size: 18),
-          const SizedBox(width: 10),
+          const Icon(Icons.sync_rounded, color: Color(0xFFFFAB40), size: 16),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               loc.isBengali
-                  ? 'ক্লাউড সংযোগ সচল — নোডএমসিইউ থেকে নতুন ডেটার অপেক্ষায়...'
-                  : 'Cloud connected — waiting for NodeMCU telemetry heartbeat...',
-              style: const TextStyle(color: Color(0xFFFFCC80), fontSize: 12),
+                  ? 'ক্লাউড সংযোগ সচল — নোডএমসিইউ-এর অপেক্ষায়...'
+                  : 'Cloud connected — waiting for NodeMCU...',
+              style: const TextStyle(color: Color(0xFFFFCC80), fontSize: 11),
             ),
           ),
         ],
@@ -686,7 +764,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildCostBanner(ChargerData data, LocalizationService loc) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
         gradient: LinearGradient(
@@ -700,23 +778,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(9),
             decoration: BoxDecoration(
               color: const Color(0xFF00E5FF).withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(Icons.receipt_long_outlined, color: Color(0xFF00E5FF), size: 24),
+            child: const Icon(Icons.receipt_long_outlined, color: Color(0xFF00E5FF), size: 22),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   loc.tr('est_bill'),
-                  style: const TextStyle(color: Colors.white60, fontSize: 12),
+                  style: const TextStyle(color: Colors.white60, fontSize: 11),
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 2),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 400),
                   child: Row(
@@ -726,12 +804,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     children: [
                       Text(
                         '৳ ${data.estimatedBdt.toStringAsFixed(2)}',
-                        style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w900),
+                        style: const TextStyle(color: Colors.white, fontSize: 25, fontWeight: FontWeight.w900),
                       ),
-                      const SizedBox(width: 6),
+                      const SizedBox(width: 5),
                       Text(
                         loc.tr('bdt'),
-                        style: const TextStyle(color: Color(0xFF00E676), fontWeight: FontWeight.bold, fontSize: 13),
+                        style: const TextStyle(color: Color(0xFF00E676), fontWeight: FontWeight.bold, fontSize: 12),
                       ),
                     ],
                   ),
@@ -744,11 +822,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               Text(
                 loc.tr('hourly_cost'),
-                style: const TextStyle(color: Colors.white38, fontSize: 10),
+                style: const TextStyle(color: Colors.white38, fontSize: 9.5),
               ),
               Text(
                 '≈ ৳ ${data.hourlyCostBdt.toStringAsFixed(2)} / hr',
-                style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13),
+                style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 12.5),
               ),
             ],
           ),
@@ -759,26 +837,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildFooter(ChargerData data, bool isAlive, LocalizationService loc) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.03),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.info_outline, color: Colors.white24, size: 14),
+          const Icon(Icons.info_outline, color: Colors.white24, size: 13),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               isAlive && data.uptimeSecs > 0
                   ? (loc.isBengali
-                      ? 'নোডএমসিইউ সচল • আপটাইম: ${data.uptimeSecs} সে. • চার্জার ক্ষমতা: ${data.chargerWatt.toInt()}W • রিফ্রেশ: প্রতি ১ সেকেন্ড'
-                      : 'NodeMCU Active • Uptime: ${data.uptimeSecs}s • IP: ${data.deviceIp} • Rated: ${data.chargerWatt.toInt()}W')
+                      ? 'নোডএমসিইউ সচল • আপটাইম: ${data.uptimeSecs} সে. • চার্জার ক্ষমতা: ${data.chargerWatt.toInt()}W (১২V ৮A) • রেট: ${data.kwhRateBdt} Tk/u'
+                      : 'NodeMCU Active • Uptime: ${data.uptimeSecs}s • Rated: ${data.chargerWatt.toInt()}W (12V ~8A) • Rate: ${data.kwhRateBdt} Tk/u')
                   : (loc.isBengali
                       ? 'চার্জার রেটেড ক্ষমতা ও চলার সময় অনুযায়ী বিদ্যুৎ বিল হিসেব করা হচ্ছে।'
                       : 'Electricity cost calculated from rated power wattage and live session duration.'),
-              style: const TextStyle(color: Colors.white38, fontSize: 10.5, height: 1.4),
+              style: const TextStyle(color: Colors.white38, fontSize: 10, height: 1.3),
             ),
           ),
         ],

@@ -1,12 +1,16 @@
 /*
  * ====================================================================================================
- * PROJECT: VoltPulse Smart 12V Battery Charger Automation Controller (v2.5 Production)
+ * PROJECT: VoltPulse Smart 12V Battery Charger Automation Controller (v3.0 Enterprise)
  * HARDWARE: ESP8266 NodeMCU V3 + CW-Q20 Low-Level Trigger Relay Module
- * ARCHITECTURE: Offline-First Local Brain + Dynamic WiFi Captive Portal + Firebase RTDB Cloud Sync
- * EXPANSION READY: 
- *   - Mode 0: None / Pure Relay & Timer Mode (Current default)
- *   - Mode 1: 100k / 10k External Resistor Voltage Divider
- *   - Mode 2: Standard 0-25V Voltage Sensor Module (5:1 Ratio)
+ * ARCHITECTURE: Offline-First Local Brain + Dynamic WiFi Captive Portal + Firebase Cloud Sync
+ * DEFAULT WI-FI: SSID "NO NET" | Password "09999999" (Supports Hidden Networks)
+ * FEATURES:
+ *   - Tri-Mode Sensor Support (0: None, 1: 100k/10k Divider, 2: 0-25V Sensor Module)
+ *   - Physical Sensor Disconnect Detection (< 2.0V threshold safety)
+ *   - Solar Backup Daytime Auto-Charge (09:00-16:00 during cloudy / overcast weather)
+ *   - Independent Weather Electricity Cost & Hours Tracker
+ *   - Realtime Countdown Cutoff Timer
+ *   - Live Wi-Fi reconfiguration via cloud or local IP without hard reset
  * ====================================================================================================
  */
 
@@ -30,7 +34,7 @@ const int RELAY_INACTIVE  = HIGH; // HIGH de-energizes coil (Charger OFF)
 // ====================================================================================================
 // PERSISTENT STORAGE (EEPROM) CONFIGURATION
 // ====================================================================================================
-#define EEPROM_MAGIC_NUMBER 0x56504C53 // "VPLS" magic marker for v2.5
+#define EEPROM_MAGIC_NUMBER 0x56504C33 // "VPL3" magic marker for v3.0
 #define EEPROM_SIZE 512
 
 struct DeviceConfig {
@@ -43,16 +47,18 @@ struct DeviceConfig {
   float    low_cut_voltage;
   float    high_cut_voltage;
   float    voltage_calibration;
-  float    charger_watt;
-  float    electricity_rate;
+  float    charger_watt;             // Default 100W (12V ~8A)
+  float    electricity_rate;         // Default 10.0 Tk/unit
   int      charge_start_hour;
   int      charge_stop_hour;
   bool     schedule_enabled;
   bool     auto_mode;
-  uint8_t  sensor_mode;              // 0 = None (Relay Timer), 1 = 100k/10k Divider, 2 = 0-25V Sensor Module
-  bool     voltage_sensor_installed; // Mirror of sensor_mode > 0
+  uint8_t  sensor_mode;              // 0 = None, 1 = 100k/10k, 2 = 0-25V Module
+  bool     voltage_sensor_installed;
+  bool     solar_backup_enabled;     // Cloudy Day Daytime Charge
   uint32_t total_charging_seconds;
   uint32_t today_charging_seconds;
+  uint32_t weather_charging_seconds; // Separately tracks solar backup charging
   uint8_t  last_saved_day;
   bool     timer_active;
   uint32_t timer_remaining_seconds;
@@ -70,9 +76,12 @@ bool isRelayOn              = false;
 bool isPortalActive         = false;
 bool isWifiConnected        = false;
 bool isTimeSynced           = false;
+bool isSensorDisconnected   = false;
+bool isCloudyDaySignal      = false;
+bool isSolarChargingNow     = false;
 
 float currentBatteryVoltage = 0.0;
-float currentAmps           = 0.0;   // Future ACS712 placeholder
+float currentAmps           = 0.0;
 
 unsigned long sessionStartSeconds   = 0;
 unsigned long currentSessionSeconds = 0;
@@ -101,52 +110,51 @@ void executeLocalChargingBrain();
 void syncFirebaseCloud();
 void pollFirebaseCommands();
 void triggerWifiResetLocal();
+void connectToNewWifi(const char* ssid, const char* pass);
 
 // ====================================================================================================
-// 1. HARDWARE SETUP (Safe Boot Sequence)
+// 1. HARDWARE SETUP
 // ====================================================================================================
 void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("\n\n========================================================");
-  Serial.println("  VoltPulse Smart 12V Battery Charger (Firmware v2.5)   ");
-  Serial.println("  Hardware: ESP8266 NodeMCU V3 + CW-Q20 Relay Module     ");
+  Serial.println("  VoltPulse Smart 12V Battery & Solar Hub (Firmware v3.0)");
+  Serial.println("  Default Wi-Fi: SSID 'NO NET' | Pass '09999999'        ");
   Serial.println("========================================================");
 
-  // CRITICAL BOOT SAFETY: Pre-set pin state HIGH before configuring as OUTPUT
+  // Safe boot sequence: Optocoupler remains HIGH/Inactive
   initHardwarePins();
 
-  // Load configuration from Flash EEPROM
+  // Load EEPROM
   loadPersistentConfig();
 
-  // Start Wi-Fi connection or trigger Dynamic Captive Portal
+  // Connect to Wi-Fi or launch setup portal
   startWiFiOrProvisioning();
 
-  // Initialize local HTTP dashboard & API
+  // Local Web Dashboard & REST API
   setupLocalWebServer();
   server.begin();
-  Serial.println("[HTTP] Local web server listening on port 80");
+  Serial.println("[HTTP] Local server active on port 80");
 
   lastSecondTick = millis();
 }
 
 // ====================================================================================================
-// 2. MAIN EXECUTION LOOP (Non-Blocking millis-based)
+// 2. MAIN EXECUTION LOOP
 // ====================================================================================================
 void loop() {
-  // If in Captive Portal Wi-Fi configuration mode:
   if (isPortalActive) {
     dnsServer.processNextRequest();
     server.handleClient();
     return;
   }
 
-  // Handle local HTTP requests
   server.handleClient();
 
   unsigned long now = millis();
 
-  // 1-Second Periodic Clock & Brain Cycle
+  // 1-Second Clock Cycle
   if (now - lastSecondTick >= 1000) {
     lastSecondTick = now;
 
@@ -154,10 +162,11 @@ void loop() {
     if (sysConfig.sensor_mode > 0) {
       currentBatteryVoltage = readBatteryVoltageFiltered();
     } else {
-      currentBatteryVoltage = 0.0; // Clean indicator: no sensor connected
+      currentBatteryVoltage = 0.0;
+      isSensorDisconnected = false;
     }
 
-    // B. Autonomous Offline Brain Decision Logic
+    // B. Autonomous Decision Brain
     executeLocalChargingBrain();
 
     // C. Charging Session Tracker
@@ -165,6 +174,10 @@ void loop() {
       currentSessionSeconds++;
       sysConfig.today_charging_seconds++;
       sysConfig.total_charging_seconds++;
+
+      if (isSolarChargingNow) {
+        sysConfig.weather_charging_seconds++;
+      }
     }
 
     // D. Daily midnight rollover via NTP
@@ -180,14 +193,13 @@ void loop() {
     }
   }
 
-  // Power-cut Checkpoint: Commit statistics to Flash every 60 seconds while charging
+  // Brownout checkpoint commit to Flash every 60s while charging
   if (isRelayOn && (now - lastEepromCommit >= 60000)) {
     lastEepromCommit = now;
     savePersistentConfig();
-    Serial.println("[EEPROM] Brownout Checkpoint: charging runtime committed to Flash.");
   }
 
-  // Cloud Synchronization (Every 3 seconds if Wi-Fi connected)
+  // Cloud Synchronization (every 3 seconds)
   if (WiFi.status() == WL_CONNECTED) {
     if (now - lastCloudSync >= 3000) {
       lastCloudSync = now;
@@ -201,21 +213,21 @@ void loop() {
 }
 
 // ====================================================================================================
-// 3. HARDWARE PIN INITIALIZATION (Boot-glitch Prevention)
+// 3. HARDWARE PIN INITIALIZATION
 // ====================================================================================================
 void initHardwarePins() {
   digitalWrite(PIN_RELAY, RELAY_INACTIVE);
   pinMode(PIN_RELAY, OUTPUT);
   digitalWrite(PIN_RELAY, RELAY_INACTIVE);
   isRelayOn = false;
-  Serial.println("[HARDWARE] D1 (GPIO 5) configured. Relay initialized strictly OFF.");
+  Serial.println("[HARDWARE] CW-Q20 Relay initialized strictly OFF.");
 }
 
 // ====================================================================================================
-// 4. AUTONOMOUS LOCAL CHARGING BRAIN (Offline-First Logic)
+// 4. AUTONOMOUS LOCAL CHARGING BRAIN
 // ====================================================================================================
 void executeLocalChargingBrain() {
-  // ── PRIORITY 0: COUNTDOWN TIMER AUTO CUTOFF ──
+  // ── PRIORITY 0: REALTIME COUNTDOWN TIMER AUTO CUTOFF ──
   if (sysConfig.timer_active) {
     if (sysConfig.timer_remaining_seconds > 0) {
       sysConfig.timer_remaining_seconds--;
@@ -226,78 +238,115 @@ void executeLocalChargingBrain() {
         digitalWrite(PIN_RELAY, RELAY_INACTIVE);
         isRelayOn = false;
         currentSessionSeconds = 0;
+        isSolarChargingNow = false;
         savePersistentConfig();
-        Serial.println("[TIMER] Realtime Countdown expired! Relay turned OFF.");
+        Serial.println("[TIMER] Countdown expired! Relay turned OFF.");
       }
     }
   }
 
   if (!sysConfig.auto_mode) {
-    // Manual Mode: Relay state is directly controlled by user switch
-    return;
+    return; // Manual mode active
   }
 
   time_t tNow = time(nullptr);
   struct tm* tmInfo = localtime(&tNow);
-  bool insideScheduleWindow = false;
+  bool insideNightSchedule = false;
+  bool insideDaytimeSolarWindow = false;
 
-  if (isTimeSynced && sysConfig.schedule_enabled) {
+  if (isTimeSynced) {
     int curHour = tmInfo->tm_hour;
-    if (sysConfig.charge_start_hour < sysConfig.charge_stop_hour) {
-      insideScheduleWindow = (curHour >= sysConfig.charge_start_hour && curHour < sysConfig.charge_stop_hour);
-    } else {
-      // Over-midnight schedule (e.g. 23:00 to 04:00)
-      insideScheduleWindow = (curHour >= sysConfig.charge_start_hour || curHour < sysConfig.charge_stop_hour);
+
+    // Night schedule window (e.g. 03:00 to 04:00)
+    if (sysConfig.schedule_enabled) {
+      if (sysConfig.charge_start_hour < sysConfig.charge_stop_hour) {
+        insideNightSchedule = (curHour >= sysConfig.charge_start_hour && curHour < sysConfig.charge_stop_hour);
+      } else {
+        insideNightSchedule = (curHour >= sysConfig.charge_start_hour || curHour < sysConfig.charge_stop_hour);
+      }
+    }
+
+    // Solar backup daytime window: 09:00 AM to 04:00 PM (16:00)
+    insideDaytimeSolarWindow = (curHour >= 9 && curHour < 16);
+  }
+
+  // ── PRIORITY 1: SOLAR CLOUDY DAY BACKUP CHARGING ──
+  if (sysConfig.solar_backup_enabled && insideDaytimeSolarWindow && isCloudyDaySignal) {
+    // Cloudy daytime detected: solar output is poor!
+    if (sysConfig.sensor_mode == 0 || (currentBatteryVoltage < (sysConfig.high_cut_voltage - 0.2) && !isSensorDisconnected)) {
+      if (!isRelayOn) {
+        digitalWrite(PIN_RELAY, RELAY_ACTIVE);
+        isRelayOn = true;
+        isSolarChargingNow = true;
+        savePersistentConfig();
+        Serial.println("[SOLAR-BACKUP] Cloudy day detected! Daytime charger turned ON.");
+      }
+      return;
+    }
+  } else if (isSolarChargingNow && !insideNightSchedule) {
+    // Sunlight returned or daytime ended
+    if (isRelayOn) {
+      digitalWrite(PIN_RELAY, RELAY_INACTIVE);
+      isRelayOn = false;
+      isSolarChargingNow = false;
+      currentSessionSeconds = 0;
+      savePersistentConfig();
+      Serial.println("[SOLAR-BACKUP] Daytime window ended or sunlight returned. Relay OFF.");
     }
   }
 
-  // ── CASE A: VOLTAGE SENSOR ACTIVE (Mode 1 or Mode 2) ──
+  // ── PRIORITY 2: VOLTAGE CUTOFF & REGULAR SCHEDULE ──
   if (sysConfig.sensor_mode > 0) {
-    // 1. Critical High Voltage Cutoff (Priority 1)
+    // If sensor is disconnected, do NOT make false high/low decisions
+    if (isSensorDisconnected) {
+      return;
+    }
+
+    // Critical High Cutoff
     if (currentBatteryVoltage >= sysConfig.high_cut_voltage) {
       if (isRelayOn) {
         digitalWrite(PIN_RELAY, RELAY_INACTIVE);
         isRelayOn = false;
         currentSessionSeconds = 0;
+        isSolarChargingNow = false;
         savePersistentConfig();
-        Serial.println("[BRAIN] High Cutoff Voltage reached! Relay turned OFF.");
+        Serial.println("[BRAIN] High Cut reached! Relay OFF.");
       }
       return;
     }
 
-    // 2. Critical Low Voltage Trigger
+    // Critical Low Voltage Trigger
     if (currentBatteryVoltage <= sysConfig.low_cut_voltage && currentBatteryVoltage > 5.0) {
       if (!isRelayOn) {
         digitalWrite(PIN_RELAY, RELAY_ACTIVE);
         isRelayOn = true;
         savePersistentConfig();
-        Serial.println("[BRAIN] Low Battery Voltage detected! Relay turned ON.");
+        Serial.println("[BRAIN] Low Battery detected! Relay ON.");
       }
       return;
     }
 
-    // 3. Scheduled Window Handling
-    if (insideScheduleWindow) {
+    // Night Scheduled Window
+    if (insideNightSchedule) {
       if (!isRelayOn && currentBatteryVoltage < (sysConfig.high_cut_voltage - 0.2)) {
         digitalWrite(PIN_RELAY, RELAY_ACTIVE);
         isRelayOn = true;
         savePersistentConfig();
-        Serial.println("[BRAIN] Scheduled Charging Window Active! Relay turned ON.");
+        Serial.println("[BRAIN] Scheduled Night Window Active: Relay ON.");
       }
     } else if (isTimeSynced && sysConfig.schedule_enabled) {
-      if (isRelayOn && tmInfo->tm_hour == sysConfig.charge_stop_hour && tmInfo->tm_min == 0) {
+      if (isRelayOn && !isSolarChargingNow && tmInfo->tm_hour == sysConfig.charge_stop_hour && tmInfo->tm_min == 0) {
         digitalWrite(PIN_RELAY, RELAY_INACTIVE);
         isRelayOn = false;
         currentSessionSeconds = 0;
         savePersistentConfig();
-        Serial.println("[BRAIN] Scheduled Charging Window ended. Relay turned OFF.");
+        Serial.println("[BRAIN] Scheduled Window ended: Relay OFF.");
       }
     }
   }
-  // ── CASE B: PURE RELAY & TIMER MODE (Mode 0: No Sensor) ──
+  // ── PRIORITY 3: NO SENSOR (TIMER & SCHEDULE ONLY) ──
   else {
-    // Sensor is not installed: purely timer & scheduled window based
-    if (insideScheduleWindow) {
+    if (insideNightSchedule) {
       if (!isRelayOn) {
         digitalWrite(PIN_RELAY, RELAY_ACTIVE);
         isRelayOn = true;
@@ -305,7 +354,7 @@ void executeLocalChargingBrain() {
         Serial.println("[BRAIN-TIMER] Schedule active: Relay ON.");
       }
     } else if (isTimeSynced && sysConfig.schedule_enabled) {
-      if (isRelayOn && tmInfo->tm_hour == sysConfig.charge_stop_hour && tmInfo->tm_min == 0) {
+      if (isRelayOn && !isSolarChargingNow && tmInfo->tm_hour == sysConfig.charge_stop_hour && tmInfo->tm_min == 0) {
         digitalWrite(PIN_RELAY, RELAY_INACTIVE);
         isRelayOn = false;
         currentSessionSeconds = 0;
@@ -317,29 +366,36 @@ void executeLocalChargingBrain() {
 }
 
 // ====================================================================================================
-// 5. VOLTAGE READING WITH NOISE SUPPRESSION FILTER
+// 5. VOLTAGE READING & SENSOR DISCONNECTION DETECTION
 // ====================================================================================================
 float readBatteryVoltageFiltered() {
-  if (sysConfig.sensor_mode == 0) return 0.0;
+  if (sysConfig.sensor_mode == 0) {
+    isSensorDisconnected = false;
+    return 0.0;
+  }
 
   long sumAdc = 0;
-  // Oversample 20 readings with 2ms interval
   for (int i = 0; i < 20; i++) {
     sumAdc += analogRead(PIN_VOLTAGE_ADC);
     delay(2);
   }
   float avgAdc = (float)sumAdc / 20.0;
 
+  // Disconnection check: ADC reading below noise floor (< 20 counts ~ < 2.0V)
+  if (avgAdc < 20.0) {
+    isSensorDisconnected = true;
+    return 0.0;
+  }
+
+  isSensorDisconnected = false;
+
   if (sysConfig.sensor_mode == 1) {
-    // Mode 1: 100k (R1) / 10k (R2) External Resistor Divider
-    // Multiplier = (100 + 10) / 10 = 11.0
-    // NodeMCU calibrated full-scale voltage at A0 pin is ~3.20V for reading 1023
+    // Mode 1: 100k / 10k External Divider (11.0x ratio)
     float pinVoltage = (avgAdc / 1023.0) * 3.20;
     float batteryVolts = pinVoltage * 11.0 * sysConfig.voltage_calibration;
     return batteryVolts;
   } else if (sysConfig.sensor_mode == 2) {
-    // Mode 2: Standard 0-25V Voltage Sensor Module (5:1 ratio, 30k/7.5k)
-    // On NodeMCU A0 (0-3.3V input range): 3.3V * 5 = 16.5V full scale
+    // Mode 2: Standard 0-25V Sensor Module (5:1 ratio)
     float batteryVolts = (avgAdc / 1023.0) * 16.50 * sysConfig.voltage_calibration;
     return batteryVolts;
   }
@@ -347,40 +403,43 @@ float readBatteryVoltageFiltered() {
 }
 
 // ====================================================================================================
-// 6. PERSISTENT STORAGE (EEPROM) MANAGEMENT
+// 6. PERSISTENT STORAGE (EEPROM)
 // ====================================================================================================
 void loadPersistentConfig() {
   EEPROM.begin(EEPROM_SIZE);
   EEPROM.get(0, sysConfig);
 
   if (sysConfig.magic != EEPROM_MAGIC_NUMBER) {
-    Serial.println("[EEPROM] Initializing default parameters...");
+    Serial.println("[EEPROM] Initializing v3.0 default parameters...");
     sysConfig.magic = EEPROM_MAGIC_NUMBER;
-    memset(sysConfig.wifi_ssid, 0, sizeof(sysConfig.wifi_ssid));
-    memset(sysConfig.wifi_pass, 0, sizeof(sysConfig.wifi_pass));
+    // Default requested: SSID "NO NET" | Pass "09999999"
+    strncpy(sysConfig.wifi_ssid, "NO NET", sizeof(sysConfig.wifi_ssid));
+    strncpy(sysConfig.wifi_pass, "09999999", sizeof(sysConfig.wifi_pass));
     strncpy(sysConfig.firebase_host, "https://wifi-charger-esp-9644-default-rtdb.firebaseio.com", sizeof(sysConfig.firebase_host));
     memset(sysConfig.firebase_auth, 0, sizeof(sysConfig.firebase_auth));
     strncpy(sysConfig.device_id, "wifi_charger_01", sizeof(sysConfig.device_id));
     sysConfig.low_cut_voltage = 11.0;
     sysConfig.high_cut_voltage = 12.8;
     sysConfig.voltage_calibration = 1.00;
-    sysConfig.charger_watt = 60.0;
-    sysConfig.electricity_rate = 9.0;
+    sysConfig.charger_watt = 100.0;          // 12V 8A ~100W
+    sysConfig.electricity_rate = 10.0;       // 10 Tk / unit
     sysConfig.charge_start_hour = 3;
     sysConfig.charge_stop_hour = 4;
     sysConfig.schedule_enabled = true;
     sysConfig.auto_mode = true;
-    sysConfig.sensor_mode = 0;              // Default: Mode 0 (No sensor, Relay/Timer)
+    sysConfig.sensor_mode = 0;              // Default: Mode 0 (No Sensor)
     sysConfig.voltage_sensor_installed = false;
+    sysConfig.solar_backup_enabled = true;  // Cloudy Day Backup active by default
     sysConfig.total_charging_seconds = 0;
     sysConfig.today_charging_seconds = 0;
+    sysConfig.weather_charging_seconds = 0;
     sysConfig.last_saved_day = 1;
     sysConfig.timer_active = false;
     sysConfig.timer_remaining_seconds = 0;
     savePersistentConfig();
   } else {
-    Serial.printf("[EEPROM] Restored Configuration! Lifetime: %lu sec | SensorMode: %d\n",
-                  sysConfig.total_charging_seconds, sysConfig.sensor_mode);
+    Serial.printf("[EEPROM] Restored v3.0 Config! Lifetime: %lu sec | SensorMode: %d | SolarBackup: %d\n",
+                  sysConfig.total_charging_seconds, sysConfig.sensor_mode, sysConfig.solar_backup_enabled);
   }
 }
 
@@ -391,29 +450,29 @@ void savePersistentConfig() {
 }
 
 // ====================================================================================================
-// 7. WI-FI INITIALIZATION & DYNAMIC CAPTIVE PORTAL
+// 7. WI-FI & CAPTIVE PORTAL (With Hidden Network Support)
 // ====================================================================================================
 void startWiFiOrProvisioning() {
   if (strlen(sysConfig.wifi_ssid) > 0) {
-    Serial.printf("[WIFI] Connecting to saved network: %s ...\n", sysConfig.wifi_ssid);
+    Serial.printf("[WIFI] Connecting to '%s' ...\n", sysConfig.wifi_ssid);
     WiFi.mode(WIFI_STA);
     WiFi.begin(sysConfig.wifi_ssid, sysConfig.wifi_pass);
 
     wifiConnectStart = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - wifiConnectStart < 15000)) {
+    while (WiFi.status() != WL_CONNECTED && (millis() - wifiConnectStart < 14000)) {
       delay(500);
       Serial.print(".");
     }
 
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("\n[WIFI] Connected Successfully!");
-      Serial.print("[WIFI] Assigned IP: http://");
+      Serial.print("[WIFI] IP: http://");
       Serial.println(WiFi.localIP());
       configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET, "pool.ntp.org", "time.google.com");
       isWifiConnected = true;
       return;
     }
-    Serial.println("\n[WIFI] Connection failed. Falling back to Captive Portal.");
+    Serial.println("\n[WIFI] Connection failed. Starting Captive Portal hotspot.");
   }
 
   setupCaptivePortal();
@@ -425,7 +484,7 @@ void setupCaptivePortal() {
   WiFi.softAP("WiFi-Charger-Setup", "12345678");
 
   dnsServer.start(53, "*", WiFi.softAPIP());
-  Serial.print("[PORTAL] AP Mode Started: 'WiFi-Charger-Setup' | http://");
+  Serial.print("[PORTAL] AP Mode: 'WiFi-Charger-Setup' | http://");
   Serial.println(WiFi.softAPIP());
 
   server.on("/", HTTP_GET, []() {
@@ -438,18 +497,18 @@ void setupCaptivePortal() {
     html += "button{width:100%;padding:14px;background:#00e676;color:#000;border:none;border-radius:10px;font-weight:bold;font-size:16px;cursor:pointer;}";
     html += "</style></head><body><div class='card'>";
     html += "<h2 style='color:#00e5ff;margin-top:0;'>⚡ VoltPulse WiFi Setup</h2>";
-    html += "<p style='color:#889;'>Select your home Wi-Fi network:</p>";
+    html += "<p style='color:#889;'>Select your Wi-Fi network:</p>";
     html += "<form action='/save' method='POST'>";
     html += "<select name='ssid'>";
     for (int i = 0; i < n; ++i) {
-      html += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
+      html += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + "</option>";
     }
     html += "</select>";
-    html += "<p style='color:#889;'>Or manual SSID:</p>";
+    html += "<p style='color:#889;'>Or enter hidden network SSID:</p>";
     html += "<input type='text' name='manual_ssid' placeholder='Hidden Network Name'>";
     html += "<p style='color:#889;'>Password:</p>";
     html += "<input type='password' name='pass' placeholder='Wi-Fi Password' required>";
-    html += "<button type='submit'>Save & Connect</button>";
+    html += "<button type='submit'>Connect</button>";
     html += "</form></div></body></html>";
     server.send(200, "text/html", html);
   });
@@ -464,7 +523,7 @@ void setupCaptivePortal() {
     savePersistentConfig();
 
     String html = "<html><body style='background:#080c18;color:#00e676;font-family:sans-serif;padding:30px;text-align:center;'>";
-    html += "<h2>✓ Credentials Saved!</h2><p style='color:#aaa;'>Connecting to " + chosenSsid + "...</p></body></html>";
+    html += "<h2>✓ Saved!</h2><p style='color:#aaa;'>Connecting to " + chosenSsid + "...</p></body></html>";
     server.send(200, "text/html", html);
     delay(1500);
     ESP.restart();
@@ -477,7 +536,7 @@ void setupCaptivePortal() {
 }
 
 void triggerWifiResetLocal() {
-  Serial.println("[WIFI] Reset command received! Clearing credentials and starting setup portal...");
+  Serial.println("[WIFI] Reset command received! Restarting setup portal...");
   memset(sysConfig.wifi_ssid, 0, sizeof(sysConfig.wifi_ssid));
   memset(sysConfig.wifi_pass, 0, sizeof(sysConfig.wifi_pass));
   savePersistentConfig();
@@ -485,36 +544,46 @@ void triggerWifiResetLocal() {
   ESP.restart();
 }
 
+void connectToNewWifi(const char* ssid, const char* pass) {
+  Serial.printf("[WIFI] Switching to new credentials: %s\n", ssid);
+  strncpy(sysConfig.wifi_ssid, ssid, sizeof(sysConfig.wifi_ssid));
+  strncpy(sysConfig.wifi_pass, pass, sizeof(sysConfig.wifi_pass));
+  savePersistentConfig();
+  WiFi.disconnect();
+  delay(300);
+  WiFi.begin(sysConfig.wifi_ssid, sysConfig.wifi_pass);
+}
+
 // ====================================================================================================
-// 8. LOCAL WEB SERVER & REST API (Direct Phone / Browser Access)
+// 8. LOCAL WEB SERVER & REST API
 // ====================================================================================================
 void setupLocalWebServer() {
-  server.on("/wifi", HTTP_GET, []() {
-    int n = WiFi.scanNetworks();
-    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-    html += "<title>Change Wi-Fi Network</title><style>";
-    html += "body{font-family:sans-serif;background:#080c18;color:#fff;padding:20px;}";
-    html += ".card{background:#131828;padding:24px;border-radius:16px;max-width:400px;margin:auto;border:1px solid #00e5ff33;}";
-    html += "input,select{width:100%;padding:12px;margin:8px 0 16px 0;box-sizing:border-box;border-radius:10px;border:1px solid #334;background:#0b0f19;color:#fff;font-size:15px;}";
-    html += "button{width:100%;padding:14px;background:#00e676;color:#000;border:none;border-radius:10px;font-weight:bold;font-size:16px;cursor:pointer;}";
-    html += "</style></head><body><div class='card'>";
-    html += "<h2 style='color:#00e5ff;'>⚡ Change Wi-Fi Network</h2>";
-    html += "<form action='/save' method='POST'>";
-    html += "<select name='ssid'>";
-    for (int i = 0; i < n; ++i) {
-      html += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + "</option>";
+  server.on("/api/set_wifi", HTTP_GET, []() {
+    if (server.hasArg("ssid") && server.hasArg("pass")) {
+      String newSsid = server.arg("ssid");
+      String newPass = server.arg("pass");
+      server.sendHeader("Access-Control-Allow-Origin", "*");
+      server.send(200, "application/json", "{\"success\":true,\"message\":\"Connecting to new Wi-Fi\"}");
+      connectToNewWifi(newSsid.c_str(), newPass.c_str());
+    } else {
+      server.send(400, "application/json", "{\"error\":\"Missing ssid or pass\"}");
     }
-    html += "</select>";
-    html += "<input type='password' name='pass' placeholder='New Wi-Fi Password' required>";
-    html += "<button type='submit'>Save & Reconnect</button>";
-    html += "</form>";
-    html += "<br><a href='/reset_wifi'><button style='background:#ff5252;color:#fff;'>Reset Wi-Fi & Launch Hotspot</button></a>";
-    html += "</div></body></html>";
-    server.send(200, "text/html", html);
+  });
+
+  server.on("/api/scan_wifi", HTTP_GET, []() {
+    int n = WiFi.scanNetworks();
+    String json = "[";
+    for (int i = 0; i < n; ++i) {
+      if (i > 0) json += ",";
+      json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+    }
+    json += "]";
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", json);
   });
 
   server.on("/reset_wifi", HTTP_GET, []() {
-    server.send(200, "text/html", "<h2>Resetting Wi-Fi... NodeMCU will start 'WiFi-Charger-Setup' hotspot.</h2>");
+    server.send(200, "text/html", "<h2>Resetting Wi-Fi... Launching hotspot.</h2>");
     delay(1000);
     triggerWifiResetLocal();
   });
@@ -528,7 +597,10 @@ void setupLocalWebServer() {
       bool target = (server.arg("relay") == "1");
       digitalWrite(PIN_RELAY, target ? RELAY_ACTIVE : RELAY_INACTIVE);
       isRelayOn = target;
-      if (!target) currentSessionSeconds = 0;
+      if (!target) {
+        currentSessionSeconds = 0;
+        isSolarChargingNow = false;
+      }
       savePersistentConfig();
     }
     server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -540,13 +612,18 @@ void setupLocalWebServer() {
     float estKwh = (totalHours * sysConfig.charger_watt) / 1000.0;
     float estCost = estKwh * sysConfig.electricity_rate;
 
+    float weatherHours = (float)sysConfig.weather_charging_seconds / 3600.0;
+    float weatherKwh = (weatherHours * sysConfig.charger_watt) / 1000.0;
+    float weatherCost = weatherKwh * sysConfig.electricity_rate;
+
     String json = "{";
     json += "\"telemetry\":{";
     json += "\"battery_voltage\":" + String(currentBatteryVoltage, 2) + ",";
+    json += "\"sensor_disconnected\":" + String(isSensorDisconnected ? "true" : "false") + ",";
     json += "\"relay_state\":" + String(isRelayOn ? "true" : "false") + ",";
     json += "\"auto_mode\":" + String(sysConfig.auto_mode ? "true" : "false") + ",";
     json += "\"sensor_mode\":" + String(sysConfig.sensor_mode) + ",";
-    json += "\"voltage_sensor_installed\":" + String(sysConfig.sensor_mode > 0 ? "true" : "false") + ",";
+    json += "\"solar_backup\":" + String(sysConfig.solar_backup_enabled ? "true" : "false") + ",";
     json += "\"timer_active\":" + String(sysConfig.timer_active ? "true" : "false") + ",";
     json += "\"timer_remaining_seconds\":" + String(sysConfig.timer_remaining_seconds) + ",";
     json += "\"uptime_secs\":" + String(millis() / 1000) + ",";
@@ -559,14 +636,11 @@ void setupLocalWebServer() {
     json += "\"current_session_seconds\":" + String(currentSessionSeconds) + ",";
     json += "\"today_seconds\":" + String(sysConfig.today_charging_seconds) + ",";
     json += "\"total_seconds\":" + String(sysConfig.total_charging_seconds) + ",";
+    json += "\"weather_charge_seconds\":" + String(sysConfig.weather_charging_seconds) + ",";
     json += "\"estimated_kwh\":" + String(estKwh, 4) + ",";
-    json += "\"estimated_bdt\":" + String(estCost, 2);
-    json += "},";
-    json += "\"config\":{";
-    json += "\"low_cut\":" + String(sysConfig.low_cut_voltage, 1) + ",";
-    json += "\"high_cut\":" + String(sysConfig.high_cut_voltage, 1) + ",";
-    json += "\"charger_watt\":" + String(sysConfig.charger_watt, 0) + ",";
-    json += "\"kwh_rate_bdt\":" + String(sysConfig.electricity_rate, 1);
+    json += "\"estimated_bdt\":" + String(estCost, 2) + ",";
+    json += "\"weather_estimated_kwh\":" + String(weatherKwh, 4) + ",";
+    json += "\"weather_estimated_bdt\":" + String(weatherCost, 2);
     json += "}}";
 
     server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -584,14 +658,18 @@ void syncFirebaseCloud() {
   float estKwh = (totalHours * sysConfig.charger_watt) / 1000.0;
   float estCost = estKwh * sysConfig.electricity_rate;
 
+  float weatherHours = (float)sysConfig.weather_charging_seconds / 3600.0;
+  float weatherKwh = (weatherHours * sysConfig.charger_watt) / 1000.0;
+  float weatherCost = weatherKwh * sysConfig.electricity_rate;
+
   String jsonPayload = "{";
   jsonPayload += "\"telemetry\":{";
   jsonPayload += "\"battery_voltage\":" + String(currentBatteryVoltage, 2) + ",";
-  jsonPayload += "\"current_amps\":null,";
+  jsonPayload += "\"sensor_disconnected\":" + String(isSensorDisconnected ? "true" : "false") + ",";
   jsonPayload += "\"relay_state\":" + String(isRelayOn ? "true" : "false") + ",";
   jsonPayload += "\"auto_mode\":" + String(sysConfig.auto_mode ? "true" : "false") + ",";
   jsonPayload += "\"sensor_mode\":" + String(sysConfig.sensor_mode) + ",";
-  jsonPayload += "\"voltage_sensor_installed\":" + String(sysConfig.sensor_mode > 0 ? "true" : "false") + ",";
+  jsonPayload += "\"solar_backup\":" + String(sysConfig.solar_backup_enabled ? "true" : "false") + ",";
   jsonPayload += "\"timer_active\":" + String(sysConfig.timer_active ? "true" : "false") + ",";
   jsonPayload += "\"timer_remaining_seconds\":" + String(sysConfig.timer_remaining_seconds) + ",";
   jsonPayload += "\"uptime_secs\":" + String(millis() / 1000) + ",";
@@ -605,15 +683,19 @@ void syncFirebaseCloud() {
   jsonPayload += "\"current_session_seconds\":" + String(currentSessionSeconds) + ",";
   jsonPayload += "\"today_seconds\":" + String(sysConfig.today_charging_seconds) + ",";
   jsonPayload += "\"total_seconds\":" + String(sysConfig.total_charging_seconds) + ",";
+  jsonPayload += "\"weather_charge_seconds\":" + String(sysConfig.weather_charging_seconds) + ",";
   jsonPayload += "\"estimated_kwh\":" + String(estKwh, 4) + ",";
-  jsonPayload += "\"estimated_bdt\":" + String(estCost, 2);
+  jsonPayload += "\"estimated_bdt\":" + String(estCost, 2) + ",";
+  jsonPayload += "\"weather_estimated_kwh\":" + String(weatherKwh, 4) + ",";
+  jsonPayload += "\"weather_estimated_bdt\":" + String(weatherCost, 2);
   jsonPayload += "},";
   jsonPayload += "\"config\":{";
   jsonPayload += "\"low_cut\":" + String(sysConfig.low_cut_voltage, 1) + ",";
   jsonPayload += "\"high_cut\":" + String(sysConfig.high_cut_voltage, 1) + ",";
   jsonPayload += "\"charger_watt\":" + String(sysConfig.charger_watt, 0) + ",";
   jsonPayload += "\"kwh_rate_bdt\":" + String(sysConfig.electricity_rate, 1) + ",";
-  jsonPayload += "\"sensor_mode\":" + String(sysConfig.sensor_mode);
+  jsonPayload += "\"sensor_mode\":" + String(sysConfig.sensor_mode) + ",";
+  jsonPayload += "\"solar_backup\":" + String(sysConfig.solar_backup_enabled ? "true" : "false");
   jsonPayload += "}}";
 
   WiFiClientSecure client;
@@ -641,7 +723,7 @@ void syncFirebaseCloud() {
 }
 
 // ====================================================================================================
-// 10. FIREBASE COMMANDS POLLING (Cloud Overrides & Timers)
+// 10. FIREBASE COMMANDS & WEATHER POLLING
 // ====================================================================================================
 void pollFirebaseCommands() {
   if (strlen(sysConfig.firebase_host) < 10) return;
@@ -655,6 +737,7 @@ void pollFirebaseCommands() {
   int slashIdx = host.indexOf('/');
   if (slashIdx != -1) host = host.substring(0, slashIdx);
 
+  // Poll Commands
   if (client.connect(host.c_str(), 443)) {
     String url = "/devices/" + String(sysConfig.device_id) + "/commands.json";
     if (strlen(sysConfig.firebase_auth) > 0) {
@@ -672,7 +755,7 @@ void pollFirebaseCommands() {
     String body = client.readString();
     client.stop();
 
-    // 1. Auto Mode Command
+    // 1. Auto Mode
     if (body.indexOf("\"auto_mode\":false") != -1) {
       sysConfig.auto_mode = false;
       savePersistentConfig();
@@ -681,7 +764,16 @@ void pollFirebaseCommands() {
       savePersistentConfig();
     }
 
-    // 2. Relay Manual Override
+    // 2. Solar Backup Mode
+    if (body.indexOf("\"solar_backup\":false") != -1) {
+      sysConfig.solar_backup_enabled = false;
+      savePersistentConfig();
+    } else if (body.indexOf("\"solar_backup\":true") != -1) {
+      sysConfig.solar_backup_enabled = true;
+      savePersistentConfig();
+    }
+
+    // 3. Relay Manual Override
     if (!sysConfig.auto_mode) {
       if (body.indexOf("\"relay_override\":true") != -1 && !isRelayOn) {
         digitalWrite(PIN_RELAY, RELAY_ACTIVE);
@@ -691,11 +783,12 @@ void pollFirebaseCommands() {
         digitalWrite(PIN_RELAY, RELAY_INACTIVE);
         isRelayOn = false;
         currentSessionSeconds = 0;
+        isSolarChargingNow = false;
         savePersistentConfig();
       }
     }
 
-    // 3. Sensor Mode Change Command
+    // 4. Sensor Mode
     if (body.indexOf("\"sensor_mode\":0") != -1 && sysConfig.sensor_mode != 0) {
       sysConfig.sensor_mode = 0;
       savePersistentConfig();
@@ -707,55 +800,92 @@ void pollFirebaseCommands() {
       savePersistentConfig();
     }
 
-    // 4. Remote Wi-Fi Reset Command
-    if (body.indexOf("\"action\":\"reset_wifi\"") != -1 || body.indexOf("\"reset_wifi\":true") != -1) {
-      // Clear command in Firebase first
-      WiFiClientSecure clientClear;
-      clientClear.setInsecure();
-      if (clientClear.connect(host.c_str(), 443)) {
-        String clearUrl = "/devices/" + String(sysConfig.device_id) + "/commands.json";
-        String patchBody = "{\"action\":null,\"reset_wifi\":null}";
-        clientClear.print(String("PATCH ") + clearUrl + " HTTP/1.1\r\n" +
-                          "Host: " + host + "\r\n" +
-                          "Content-Type: application/json\r\n" +
-                          "Content-Length: " + patchBody.length() + "\r\n" +
-                          "Connection: close\r\n\r\n" + patchBody);
-        clientClear.stop();
+    // 5. Live New Wi-Fi Reconfiguration
+    int newWifiIdx = body.indexOf("\"new_wifi\":");
+    if (newWifiIdx != -1) {
+      int ssidStart = body.indexOf("\"ssid\":\"", newWifiIdx);
+      if (ssidStart != -1) {
+        ssidStart += 8;
+        int ssidEnd = body.indexOf("\"", ssidStart);
+        String nSsid = body.substring(ssidStart, ssidEnd);
+
+        int passStart = body.indexOf("\"pass\":\"", newWifiIdx);
+        if (passStart != -1) {
+          passStart += 8;
+          int passEnd = body.indexOf("\"", passStart);
+          String nPass = body.substring(passStart, passEnd);
+
+          // Clear new_wifi command in Firebase
+          WiFiClientSecure cClear;
+          cClear.setInsecure();
+          if (cClear.connect(host.c_str(), 443)) {
+            String cUrl = "/devices/" + String(sysConfig.device_id) + "/commands.json";
+            String cBody = "{\"new_wifi\":null}";
+            cClear.print(String("PATCH ") + cUrl + " HTTP/1.1\r\n" +
+                         "Host: " + host + "\r\n" +
+                         "Content-Type: application/json\r\n" +
+                         "Content-Length: " + cBody.length() + "\r\n" +
+                         "Connection: close\r\n\r\n" + cBody);
+            cClear.stop();
+          }
+
+          connectToNewWifi(nSsid.c_str(), nPass.c_str());
+        }
       }
-      triggerWifiResetLocal();
     }
 
-    // 5. Countdown Timer Command
+    // 6. Countdown Timer Command
     int timerIdx = body.indexOf("\"set_timer_minutes\":");
     if (timerIdx != -1) {
       int minutes = body.substring(timerIdx + 20).toInt();
       if (minutes > 0) {
         sysConfig.timer_active = true;
         sysConfig.timer_remaining_seconds = minutes * 60;
-        // Turn ON relay immediately for timed charge
         digitalWrite(PIN_RELAY, RELAY_ACTIVE);
         isRelayOn = true;
         savePersistentConfig();
-        Serial.printf("[TIMER] Cloud timer activated: %d minutes\n", minutes);
       } else {
         sysConfig.timer_active = false;
         sysConfig.timer_remaining_seconds = 0;
         savePersistentConfig();
       }
 
-      // Clear the set_timer_minutes command so it doesn't re-trigger
-      WiFiClientSecure clientTimerClear;
-      clientTimerClear.setInsecure();
-      if (clientTimerClear.connect(host.c_str(), 443)) {
-        String clearUrl = "/devices/" + String(sysConfig.device_id) + "/commands.json";
-        String patchBody = "{\"set_timer_minutes\":null}";
-        clientTimerClear.print(String("PATCH ") + clearUrl + " HTTP/1.1\r\n" +
-                               "Host: " + host + "\r\n" +
-                               "Content-Type: application/json\r\n" +
-                               "Content-Length: " + patchBody.length() + "\r\n" +
-                               "Connection: close\r\n\r\n" + patchBody);
-        clientTimerClear.stop();
+      WiFiClientSecure cClear;
+      cClear.setInsecure();
+      if (cClear.connect(host.c_str(), 443)) {
+        String cUrl = "/devices/" + String(sysConfig.device_id) + "/commands.json";
+        String cBody = "{\"set_timer_minutes\":null}";
+        cClear.print(String("PATCH ") + cUrl + " HTTP/1.1\r\n" +
+                     "Host: " + host + "\r\n" +
+                     "Content-Type: application/json\r\n" +
+                     "Content-Length: " + cBody.length() + "\r\n" +
+                     "Connection: close\r\n\r\n" + cBody);
+        cClear.stop();
       }
+    }
+  }
+
+  // Poll Weather Status for Solar Backup
+  if (sysConfig.solar_backup_enabled && client.connect(host.c_str(), 443)) {
+    String wUrl = "/devices/" + String(sysConfig.device_id) + "/weather.json";
+    if (strlen(sysConfig.firebase_auth) > 0) {
+      wUrl += "?auth=" + String(sysConfig.firebase_auth);
+    }
+    client.print(String("GET ") + wUrl + " HTTP/1.1\r\n" +
+                 "Host: " + host + "\r\n" +
+                 "Connection: close\r\n\r\n");
+
+    while (client.connected()) {
+      String line = client.readStringUntil('\n');
+      if (line == "\r") break;
+    }
+    String wBody = client.readString();
+    client.stop();
+
+    if (wBody.indexOf("\"is_cloudy\":true") != -1) {
+      isCloudyDaySignal = true;
+    } else if (wBody.indexOf("\"is_cloudy\":false") != -1) {
+      isCloudyDaySignal = false;
     }
   }
 }

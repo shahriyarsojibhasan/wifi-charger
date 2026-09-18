@@ -3,12 +3,18 @@ class ChargerData {
   final bool relayState;
   final bool autoMode;
   final bool isScheduleWindow;
+  final bool solarBackupEnabled;
+  final bool isCloudyDay;
+  final int cloudCoverPercent;
   final int currentSessionSeconds;
   final int manualOnSeconds;
   final int todaySeconds;
   final int totalSeconds;
+  final int weatherChargeSeconds;
   final double estimatedKwh;
   final double estimatedBdt;
+  final double weatherEstimatedKwh;
+  final double weatherEstimatedBdt;
   final double lowCut;
   final double highCut;
   final double chargerWatt;
@@ -16,8 +22,9 @@ class ChargerData {
   final int chargeStartHour;
   final int chargeStopHour;
   final bool scheduleEnabled;
-  final int sensorMode; // 0: None, 1: 100k/10k Divider, 2: 0-25V Sensor Module
+  final int sensorMode; // 0: None, 1: 100k/10k Divider, 2: 0-25V Module
   final bool voltageSensorInstalled;
+  final bool sensorDisconnected;
   final double voltageCalibration;
   final int lastUpdated;
   final bool timerActive;
@@ -33,21 +40,28 @@ class ChargerData {
     this.relayState = false,
     this.autoMode = true,
     this.isScheduleWindow = false,
+    this.solarBackupEnabled = true,
+    this.isCloudyDay = false,
+    this.cloudCoverPercent = 20,
     this.currentSessionSeconds = 0,
     this.manualOnSeconds = 0,
     this.todaySeconds = 0,
     this.totalSeconds = 0,
+    this.weatherChargeSeconds = 0,
     this.estimatedKwh = 0.0,
     this.estimatedBdt = 0.0,
+    this.weatherEstimatedKwh = 0.0,
+    this.weatherEstimatedBdt = 0.0,
     this.lowCut = 11.0,
     this.highCut = 12.8,
-    this.chargerWatt = 60.0,
-    this.kwhRateBdt = 9.0,
+    this.chargerWatt = 100.0, // 12V 8A ~100W
+    this.kwhRateBdt = 10.0,   // 10 Tk / unit
     this.chargeStartHour = 3,
     this.chargeStopHour = 4,
     this.scheduleEnabled = true,
     this.sensorMode = 0,
     this.voltageSensorInstalled = false,
+    this.sensorDisconnected = false,
     this.voltageCalibration = 1.00,
     this.lastUpdated = 0,
     this.timerActive = false,
@@ -60,18 +74,36 @@ class ChargerData {
   });
 
   double get hourlyCostBdt => (chargerWatt / 1000.0) * kwhRateBdt;
+  double get sixMonthEstimatedBdt {
+    // 6-month calculation based on daily run rate * 180 days
+    if (todaySeconds > 0) {
+      final dailyKwh = (todaySeconds / 3600.0) * chargerWatt / 1000.0;
+      return dailyKwh * kwhRateBdt * 180.0;
+    }
+    // Fallback: lifetime projection or default 1hr/day
+    if (totalSeconds > 0) {
+      return (estimatedBdt * 1.5).clamp(150.0, 5000.0);
+    }
+    return (1.0 * chargerWatt / 1000.0) * kwhRateBdt * 180.0; // ~180 Tk
+  }
 
   ChargerData copyWith({
     double? batteryVoltage,
     bool? relayState,
     bool? autoMode,
     bool? isScheduleWindow,
+    bool? solarBackupEnabled,
+    bool? isCloudyDay,
+    int? cloudCoverPercent,
     int? currentSessionSeconds,
     int? manualOnSeconds,
     int? todaySeconds,
     int? totalSeconds,
+    int? weatherChargeSeconds,
     double? estimatedKwh,
     double? estimatedBdt,
+    double? weatherEstimatedKwh,
+    double? weatherEstimatedBdt,
     double? lowCut,
     double? highCut,
     double? chargerWatt,
@@ -81,6 +113,7 @@ class ChargerData {
     bool? scheduleEnabled,
     int? sensorMode,
     bool? voltageSensorInstalled,
+    bool? sensorDisconnected,
     double? voltageCalibration,
     int? lastUpdated,
     bool? timerActive,
@@ -96,12 +129,18 @@ class ChargerData {
       relayState: relayState ?? this.relayState,
       autoMode: autoMode ?? this.autoMode,
       isScheduleWindow: isScheduleWindow ?? this.isScheduleWindow,
+      solarBackupEnabled: solarBackupEnabled ?? this.solarBackupEnabled,
+      isCloudyDay: isCloudyDay ?? this.isCloudyDay,
+      cloudCoverPercent: cloudCoverPercent ?? this.cloudCoverPercent,
       currentSessionSeconds: currentSessionSeconds ?? this.currentSessionSeconds,
       manualOnSeconds: manualOnSeconds ?? this.manualOnSeconds,
       todaySeconds: todaySeconds ?? this.todaySeconds,
       totalSeconds: totalSeconds ?? this.totalSeconds,
+      weatherChargeSeconds: weatherChargeSeconds ?? this.weatherChargeSeconds,
       estimatedKwh: estimatedKwh ?? this.estimatedKwh,
       estimatedBdt: estimatedBdt ?? this.estimatedBdt,
+      weatherEstimatedKwh: weatherEstimatedKwh ?? this.weatherEstimatedKwh,
+      weatherEstimatedBdt: weatherEstimatedBdt ?? this.weatherEstimatedBdt,
       lowCut: lowCut ?? this.lowCut,
       highCut: highCut ?? this.highCut,
       chargerWatt: chargerWatt ?? this.chargerWatt,
@@ -111,6 +150,7 @@ class ChargerData {
       scheduleEnabled: scheduleEnabled ?? this.scheduleEnabled,
       sensorMode: sensorMode ?? this.sensorMode,
       voltageSensorInstalled: voltageSensorInstalled ?? this.voltageSensorInstalled,
+      sensorDisconnected: sensorDisconnected ?? this.sensorDisconnected,
       voltageCalibration: voltageCalibration ?? this.voltageCalibration,
       lastUpdated: lastUpdated ?? this.lastUpdated,
       timerActive: timerActive ?? this.timerActive,
@@ -138,6 +178,9 @@ class ChargerData {
     final config = (json['config'] is Map)
         ? Map<String, dynamic>.from(json['config'] as Map)
         : <String, dynamic>{};
+    final weather = (json['weather'] is Map)
+        ? Map<String, dynamic>.from(json['weather'] as Map)
+        : <String, dynamic>{};
 
     double toDouble(dynamic val, double fallback) {
       if (val == null) return fallback;
@@ -158,28 +201,44 @@ class ChargerData {
     }
 
     final sMode = toInt(telemetry['sensor_mode'] ?? config['sensor_mode'], 0);
-    final sensorInstalled = sMode > 0 || toBool(telemetry['voltage_sensor_installed'] ?? config['voltage_sensor_installed'], false);
+    final rawVolts = toDouble(telemetry['battery_voltage'], 0.0);
+    final isDisconnected = sMode > 0 && (rawVolts < 2.5 || toBool(telemetry['sensor_disconnected'], false));
+
+    final totalSecs = toInt(stats['total_seconds'], 0);
+    final weatherSecs = toInt(stats['weather_charge_seconds'], 0);
+    final watt = toDouble(config['charger_watt'], 100.0);
+    final rate = toDouble(config['kwh_rate_bdt'], 10.0);
+
+    final wKwh = (weatherSecs / 3600.0) * watt / 1000.0;
+    final wBdt = wKwh * rate;
 
     return ChargerData(
-      batteryVoltage: toDouble(telemetry['battery_voltage'], 0.0),
+      batteryVoltage: rawVolts,
       relayState: toBool(telemetry['relay_state'], false),
       autoMode: toBool(control['auto_mode'] ?? telemetry['auto_mode'], true),
       isScheduleWindow: toBool(telemetry['is_schedule_window'], false),
+      solarBackupEnabled: toBool(control['solar_backup'] ?? config['solar_backup'], true),
+      isCloudyDay: toBool(weather['is_cloudy'] ?? telemetry['is_cloudy_day'], false),
+      cloudCoverPercent: toInt(weather['cloud_cover'] ?? telemetry['cloud_cover'], 20),
       currentSessionSeconds: toInt(stats['current_session_seconds'], 0),
       manualOnSeconds: toInt(stats['manual_on_seconds'], 0),
       todaySeconds: toInt(stats['today_seconds'], 0),
-      totalSeconds: toInt(stats['total_seconds'], 0),
-      estimatedKwh: toDouble(stats['estimated_kwh'], 0.0),
-      estimatedBdt: toDouble(stats['estimated_bdt'], 0.0),
+      totalSeconds: totalSecs,
+      weatherChargeSeconds: weatherSecs,
+      estimatedKwh: toDouble(stats['estimated_kwh'], (totalSecs / 3600.0 * watt / 1000.0)),
+      estimatedBdt: toDouble(stats['estimated_bdt'], (totalSecs / 3600.0 * watt / 1000.0 * rate)),
+      weatherEstimatedKwh: toDouble(stats['weather_estimated_kwh'], wKwh),
+      weatherEstimatedBdt: toDouble(stats['weather_estimated_bdt'], wBdt),
       lowCut: toDouble(config['low_cut'], 11.0),
       highCut: toDouble(config['high_cut'], 12.8),
-      chargerWatt: toDouble(config['charger_watt'], 60.0),
-      kwhRateBdt: toDouble(config['kwh_rate_bdt'], 9.0),
+      chargerWatt: watt,
+      kwhRateBdt: rate,
       chargeStartHour: toInt(config['charge_start_hour'], 3),
       chargeStopHour: toInt(config['charge_stop_hour'], 4),
       scheduleEnabled: toBool(config['schedule_enabled'], true),
       sensorMode: sMode,
-      voltageSensorInstalled: sensorInstalled,
+      voltageSensorInstalled: sMode > 0,
+      sensorDisconnected: isDisconnected,
       voltageCalibration: toDouble(config['voltage_calibration'], 1.00),
       lastUpdated: toInt(telemetry['last_updated'], 0),
       timerActive: toBool(telemetry['timer_active'], false),

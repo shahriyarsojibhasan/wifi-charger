@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/firebase_service.dart';
 import '../services/localization_service.dart';
+import '../services/weather_service.dart';
+import '../services/toast_service.dart';
 
 class SettingsDialog extends StatefulWidget {
   final FirebaseService service;
@@ -19,13 +21,16 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late TextEditingController _startHourCtrl;
   late TextEditingController _stopHourCtrl;
   late TextEditingController _calibCtrl;
-  late TextEditingController _dbUrlCtrl;
-  late TextEditingController _espIpCtrl;
-  late TextEditingController _deviceIdCtrl;
+
+  late TextEditingController _wifiSsidCtrl;
+  late TextEditingController _wifiPassCtrl;
+  bool _isWifiHidden = false;
 
   late bool _scheduleEnabled;
   late int _sensorMode;
   bool _isSaving = false;
+  bool _isSendingWifi = false;
+  bool _isDetectingLocation = false;
 
   @override
   void initState() {
@@ -38,9 +43,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _startHourCtrl = TextEditingController(text: d.chargeStartHour.toString());
     _stopHourCtrl = TextEditingController(text: d.chargeStopHour.toString());
     _calibCtrl = TextEditingController(text: d.voltageCalibration.toStringAsFixed(3));
-    _dbUrlCtrl = TextEditingController(text: widget.service.databaseUrl);
-    _espIpCtrl = TextEditingController(text: widget.service.localEspIp);
-    _deviceIdCtrl = TextEditingController(text: widget.service.deviceId);
+
+    _wifiSsidCtrl = TextEditingController(text: 'NO NET');
+    _wifiPassCtrl = TextEditingController(text: '09999999');
+
     _scheduleEnabled = d.scheduleEnabled;
     _sensorMode = d.sensorMode;
   }
@@ -54,9 +60,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _startHourCtrl.dispose();
     _stopHourCtrl.dispose();
     _calibCtrl.dispose();
-    _dbUrlCtrl.dispose();
-    _espIpCtrl.dispose();
-    _deviceIdCtrl.dispose();
+    _wifiSsidCtrl.dispose();
+    _wifiPassCtrl.dispose();
     super.dispose();
   }
 
@@ -67,42 +72,42 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
     return Dialog(
       backgroundColor: const Color(0xFF161C2E),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 540),
-        padding: const EdgeInsets.all(22),
+        constraints: const BoxConstraints(maxWidth: 520),
+        padding: const EdgeInsets.all(20),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Dialog Header
+              // Header
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Row(
                     children: [
                       const Icon(Icons.settings, color: Color(0xFF00E5FF), size: 22),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
                       Text(
                         loc.tr('settings_title'),
-                        style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                        style: const TextStyle(color: Colors.white, fontSize: 16.5, fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white54),
+                    icon: const Icon(Icons.close, color: Colors.white54, size: 20),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
-              const Divider(color: Colors.white12, height: 24),
+              const Divider(color: Colors.white12, height: 20),
 
-              // ── 1. SENSOR HARDWARE PHASE (0: None, 1: 100k/10k, 2: 0-25V) ──
+              // ── 1. SENSOR HARDWARE PHASE ──
               _buildSectionTitle(loc.tr('sensor_hardware')),
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.04),
                   borderRadius: BorderRadius.circular(14),
@@ -113,20 +118,20 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   children: [
                     Text(
                       loc.tr('sensor_select_label'),
-                      style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+                      style: const TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 6),
                     _buildRadioTile(
                       title: loc.tr('sensor_none'),
                       subtitle: isBn
-                          ? 'বর্তমান রিলে মোড — টাইমার ও শিডিউল অনুযায়ী স্বয়ংক্রিয়ভাবে চার্জ হবে।'
-                          : 'Pure relay mode — automated by timer and schedule.',
+                          ? 'বর্তমান রিলে ও সোলার মোড — শিডিউল ও আবহাওয়া অনুযায়ী কাজ করবে।'
+                          : 'Pure relay & solar mode — automated by schedule and weather.',
                       value: 0,
                     ),
                     _buildRadioTile(
                       title: loc.tr('sensor_divider'),
                       subtitle: isBn
-                          ? 'অস্থায়ী ১০০k ও ১০k রেজিস্টর দিয়ে ভোল্টেজ পরিমাপ।'
+                          ? 'অস্থায়ী ১০০k ও ১০k রেজিস্টর ডিভাইডার ভোল্টেজ সেন্সর।'
                           : 'Temporary 100k/10k resistor voltage divider.',
                       value: 1,
                     ),
@@ -140,27 +145,27 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   ],
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
 
-              // ── 2. VOLTAGE PROTECTION THRESHOLDS (if sensor installed) ──
+              // ── 2. VOLTAGE THRESHOLDS ──
               if (_sensorMode > 0) ...[
-                _buildSectionTitle(isBn ? 'ভোল্টেজ প্রটেকশন লিমিট' : 'VOLTAGE PROTECTION THRESHOLDS'),
+                _buildSectionTitle(isBn ? 'ভোল্টেজ লিমিট সেটিংস' : 'VOLTAGE THRESHOLDS'),
                 Row(
                   children: [
                     Expanded(
                       child: _buildTextField(
                         controller: _lowCutCtrl,
-                        label: isBn ? 'লো কাট ভোল্টেজ (V)' : 'Low Cut Voltage (V)',
+                        label: isBn ? 'লো কাট অন (V)' : 'Low Cut (V)',
                         hint: '11.0',
                         icon: Icons.arrow_downward,
                         keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: _buildTextField(
                         controller: _highCutCtrl,
-                        label: isBn ? 'ফুল চার্জ কাট (V)' : 'Full Charge Cut (V)',
+                        label: isBn ? 'ফুল চার্জ কাট (V)' : 'Full Cut (V)',
                         hint: '12.8',
                         icon: Icons.arrow_upward,
                         keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -168,15 +173,15 @@ class _SettingsDialogState extends State<SettingsDialog> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 _buildTextField(
                   controller: _calibCtrl,
-                  label: isBn ? 'ভোল্টেজ ক্যালিব্রেশন মাল্টিপ্লায়ার' : 'Voltage Calibration Multiplier',
+                  label: isBn ? 'ক্যালিব্রেশন মাল্টিপ্লায়ার' : 'Calibration Multiplier',
                   hint: '1.000',
                   icon: Icons.straighten,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
               ],
 
               // ── 3. CHARGING SCHEDULE ──
@@ -187,72 +192,46 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: SwitchListTile(
+                  dense: true,
                   title: Text(
-                    isBn ? 'দৈনিক শিডিউল চালু রাখুন' : 'Enable Daily Schedule Window',
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    isBn ? 'নাইট শিডিউল চালু রাখুন' : 'Enable Night Schedule Window',
+                    style: const TextStyle(color: Colors.white, fontSize: 12.5),
                   ),
                   value: _scheduleEnabled,
                   activeThumbColor: const Color(0xFF00E676),
                   onChanged: (val) => setState(() => _scheduleEnabled = val),
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Row(
                 children: [
                   Expanded(
                     child: _buildTextField(
                       controller: _startHourCtrl,
                       label: isBn ? 'শুরুর ঘণ্টা (০-২৩)' : 'Start Hour (0-23)',
-                      hint: '3 (3:00 AM)',
+                      hint: '3',
                       icon: Icons.alarm,
                       keyboardType: TextInputType.number,
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: _buildTextField(
                       controller: _stopHourCtrl,
                       label: isBn ? 'শেষের ঘণ্টা (০-২৩)' : 'Stop Hour (0-23)',
-                      hint: '4 (4:00 AM)',
+                      hint: '4',
                       icon: Icons.alarm_off,
                       keyboardType: TextInputType.number,
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
 
-              // ── 4. ENERGY & ELECTRICITY TARIFF ──
-              _buildSectionTitle(loc.tr('stats_title')),
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildTextField(
-                      controller: _wattCtrl,
-                      label: loc.tr('charger_watt'),
-                      hint: '60',
-                      icon: Icons.bolt,
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildTextField(
-                      controller: _rateCtrl,
-                      label: loc.tr('tariff_rate'),
-                      hint: '9.0',
-                      icon: Icons.monetization_on,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-
-              // ── 5. WI-FI & NETWORK MANAGEMENT ──
-              _buildSectionTitle(loc.tr('change_wifi')),
+              // ── 4. WEATHER & AREA LOCATION (100% ACCURATE OPEN-METEO) ──
+              _buildSectionTitle(loc.tr('weather_location_title')),
               Container(
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.04),
                   borderRadius: BorderRadius.circular(14),
@@ -261,63 +240,253 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      isBn
-                          ? 'নোডএমসিইউ-এর সাথে নতুন ওয়াইফাই সংযোগ করার জন্য নিচের বাটনে চাপ দিন। নোডএমসিইউ হটস্পট ("WiFi-Charger-Setup") চালু করবে।'
-                          : 'To connect NodeMCU to a different Wi-Fi, tap below to re-launch the setup hotspot.',
-                      style: const TextStyle(color: Colors.white60, fontSize: 11.5, height: 1.4),
+                    Row(
+                      children: [
+                        const Icon(Icons.location_on_rounded, color: Color(0xFF00E5FF), size: 17),
+                        const SizedBox(width: 8),
+                        Text(
+                          loc.tr('select_district'),
+                          style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 12),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF00E5FF),
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
                       ),
-                      icon: const Icon(Icons.wifi_protected_setup, size: 18),
-                      label: Text(
-                        loc.tr('reset_wifi_btn'),
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<BangladeshDistrict>(
+                          isExpanded: true,
+                          dropdownColor: const Color(0xFF1E2640),
+                          value: WeatherService.instance.selectedDistrict,
+                          icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF00E5FF)),
+                          items: WeatherService.districts.map((d) {
+                            return DropdownMenuItem<BangladeshDistrict>(
+                              value: d,
+                              child: Text(
+                                '${d.nameEn} (${d.nameBn})',
+                                style: const TextStyle(color: Colors.white, fontSize: 13),
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (newDist) async {
+                            if (newDist != null) {
+                              await WeatherService.instance.setDistrict(newDist);
+                              setState(() {});
+                            }
+                          },
+                        ),
                       ),
-                      onPressed: () async {
-                        final confirm = await showDialog<bool>(
-                          context: context,
-                          builder: (ctx) => AlertDialog(
-                            backgroundColor: const Color(0xFF161C2E),
-                            title: Text(loc.tr('change_wifi'), style: const TextStyle(color: Colors.white)),
-                            content: Text(
-                              isBn
-                                  ? 'আপনি কি নিশ্চিত? নোডএমসিইউ ওয়াইফাই রিসেট করে "WiFi-Charger-Setup" হটস্পট চালু করবে।'
-                                  : 'Reset Wi-Fi credentials and start NodeMCU setup hotspot?',
-                              style: const TextStyle(color: Colors.white70),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF00E5FF),
+                              side: const BorderSide(color: Color(0xFF00E5FF)),
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                             ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(ctx, false),
-                                child: Text(loc.tr('cancel')),
-                              ),
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF), foregroundColor: Colors.black),
-                                onPressed: () => Navigator.pop(ctx, true),
-                                child: const Text('Reset Wi-Fi'),
-                              ),
-                            ],
+                            icon: _isDetectingLocation
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00E5FF)),
+                                  )
+                                : const Icon(Icons.my_location_rounded, size: 16),
+                            label: Text(
+                              _isDetectingLocation ? loc.tr('detecting_location') : loc.tr('auto_detect_location'),
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                            ),
+                            onPressed: _isDetectingLocation
+                                ? null
+                                : () async {
+                                    setState(() => _isDetectingLocation = true);
+                                    final success = await WeatherService.instance.autoDetectLocation();
+                                    if (mounted) {
+                                      setState(() => _isDetectingLocation = false);
+                                      if (success) {
+                                        ToastService.instance.success(
+                                          '${loc.tr('location_detected')}: ${WeatherService.instance.selectedDistrict.nameEn} (${WeatherService.instance.selectedDistrict.nameBn})',
+                                        );
+                                      } else {
+                                        ToastService.instance.warning(loc.tr('location_detect_failed'));
+                                      }
+                                    }
+                                  },
                           ),
-                        );
-                        if (confirm == true) {
-                          await widget.service.triggerWifiReset();
-                          if (context.mounted) Navigator.pop(context);
-                        }
-                      },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E676).withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF00E676).withValues(alpha: 0.2)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.verified_rounded, color: Color(0xFF00E676), size: 14),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              loc.tr('weather_accuracy_badge'),
+                              style: const TextStyle(color: Colors.white70, fontSize: 9.5),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
 
-              // ── 6. DANGER ZONE: RESET BILL ──
+              // ── 5. POWER RATING & ELECTRICITY TARIFF ──
+              _buildSectionTitle(loc.tr('stats_title')),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildTextField(
+                      controller: _wattCtrl,
+                      label: loc.tr('charger_watt'),
+                      hint: '100',
+                      icon: Icons.bolt,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildTextField(
+                      controller: _rateCtrl,
+                      label: loc.tr('tariff_rate'),
+                      hint: '10.0',
+                      icon: Icons.monetization_on,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // ── 5. WI-FI CREDENTIALS & MANAGEMENT ──
+              _buildSectionTitle(loc.tr('change_wifi')),
               Container(
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildTextField(
+                      controller: _wifiSsidCtrl,
+                      label: loc.tr('wifi_ssid_label'),
+                      hint: 'NO NET',
+                      icon: Icons.wifi,
+                    ),
+                    const SizedBox(height: 8),
+                    _buildTextField(
+                      controller: _wifiPassCtrl,
+                      label: loc.tr('wifi_pass_label'),
+                      hint: '09999999',
+                      icon: Icons.lock_outline,
+                    ),
+                    CheckboxListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(loc.tr('hidden_ssid'), style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
+                      value: _isWifiHidden,
+                      activeColor: const Color(0xFF00E5FF),
+                      checkColor: Colors.black,
+                      onChanged: (val) => setState(() => _isWifiHidden = val ?? false),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF00E5FF),
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 9),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: _isSendingWifi
+                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
+                                : const Icon(Icons.send_rounded, size: 16),
+                            label: Text(loc.tr('update_wifi_direct'),
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                            onPressed: _isSendingWifi
+                                ? null
+                                : () async {
+                                    setState(() => _isSendingWifi = true);
+                                    await widget.service.updateWifiCredentials(
+                                      ssid: _wifiSsidCtrl.text.trim(),
+                                      pass: _wifiPassCtrl.text.trim(),
+                                      hidden: _isWifiHidden,
+                                    );
+                                    if (mounted) setState(() => _isSendingWifi = false);
+                                  },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFFFF5252),
+                            side: const BorderSide(color: Color(0xFFFF5252)),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          onPressed: () async {
+                            final confirm = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                backgroundColor: const Color(0xFF161C2E),
+                                title: Text(loc.tr('change_wifi'), style: const TextStyle(color: Colors.white)),
+                                content: Text(
+                                  isBn
+                                      ? 'নোডএমসিইউ ওয়াইফাই রিসেট করে "WiFi-Charger-Setup" হটস্পট চালু করতে চান?'
+                                      : 'Reset Wi-Fi credentials and start NodeMCU setup hotspot?',
+                                  style: const TextStyle(color: Colors.white70),
+                                ),
+                                actions: [
+                                  TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(loc.tr('cancel'))),
+                                  ElevatedButton(
+                                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFF5252)),
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                    child: const Text('Reset'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirm == true) {
+                              await widget.service.triggerWifiReset();
+                              if (context.mounted) Navigator.pop(context);
+                            }
+                          },
+                          child: const Text('Hotspot Reset', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // ── 6. DANGER ZONE ──
+              Container(
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: const Color(0xFFFF5252).withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(12),
@@ -331,10 +500,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(loc.tr('reset_stats'),
-                              style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.bold)),
+                              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
                           Text(
-                            isBn ? 'সেশন ও মোট বিদ্যুৎ বিল শূন্য করে দেবে' : 'Clears hours & bill statistics',
-                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                            isBn ? 'সেশন, ওয়েদার ও মোট বিল শূন্য করবে' : 'Clears hours & bill statistics',
+                            style: const TextStyle(color: Colors.white54, fontSize: 10.5),
                           ),
                         ],
                       ),
@@ -343,7 +512,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFFF5252),
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       ),
                       onPressed: () async {
                         final confirm = await showDialog<bool>(
@@ -352,9 +521,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                             backgroundColor: const Color(0xFF161C2E),
                             title: Text(loc.tr('reset_stats'), style: const TextStyle(color: Colors.white)),
                             content: Text(
-                              isBn
-                                  ? 'আপনি কি সব বিল ও চার্জিং হিসেব শূন্য করতে চান?'
-                                  : 'Reset all charging hours and bill statistics to zero?',
+                              isBn ? 'সব পরিসংখ্যান রিসেট করতে চান?' : 'Reset all charging hours and bill statistics?',
                               style: const TextStyle(color: Colors.white70),
                             ),
                             actions: [
@@ -369,14 +536,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
                         );
                         if (confirm == true) await widget.service.resetStatistics();
                       },
-                      child: const Text('Reset', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                      child: const Text('Reset', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
-              // Actions: Cancel & Save
+              // Save Actions
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
@@ -384,18 +551,18 @@ class _SettingsDialogState extends State<SettingsDialog> {
                     onPressed: () => Navigator.pop(context),
                     child: Text(loc.tr('cancel'), style: const TextStyle(color: Colors.white60)),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF00E676),
                       foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     icon: _isSaving
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
-                        : const Icon(Icons.check, size: 18),
-                    label: Text(_isSaving ? 'Saving...' : loc.tr('save_changes'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
+                        : const Icon(Icons.check, size: 17),
+                    label: Text(_isSaving ? 'Saving...' : loc.tr('save_changes'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                     onPressed: _isSaving
                         ? null
                         : () async {
@@ -403,8 +570,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
                             await widget.service.updateFullConfig(
                               lowCut: double.tryParse(_lowCutCtrl.text) ?? 11.0,
                               highCut: double.tryParse(_highCutCtrl.text) ?? 12.8,
-                              chargerWatt: double.tryParse(_wattCtrl.text) ?? 60.0,
-                              kwhRateBdt: double.tryParse(_rateCtrl.text) ?? 9.0,
+                              chargerWatt: double.tryParse(_wattCtrl.text) ?? 100.0,
+                              kwhRateBdt: double.tryParse(_rateCtrl.text) ?? 10.0,
                               chargeStartHour: int.tryParse(_startHourCtrl.text) ?? 3,
                               chargeStopHour: int.tryParse(_stopHourCtrl.text) ?? 4,
                               scheduleEnabled: _scheduleEnabled,
@@ -429,8 +596,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
       onTap: () => setState(() => _sensorMode = value),
       borderRadius: BorderRadius.circular(10),
       child: Container(
-        margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        margin: const EdgeInsets.only(bottom: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFF00E5FF).withValues(alpha: 0.12) : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
@@ -443,9 +610,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
             Icon(
               isSelected ? Icons.radio_button_checked : Icons.radio_button_off,
               color: isSelected ? const Color(0xFF00E5FF) : Colors.white38,
-              size: 18,
+              size: 17,
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -453,10 +620,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   Text(title,
                       style: TextStyle(
                         color: isSelected ? Colors.white : Colors.white70,
-                        fontSize: 12.5,
+                        fontSize: 12,
                         fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                       )),
-                  Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 10.5)),
+                  Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 10)),
                 ],
               ),
             ),
@@ -468,8 +635,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
   Widget _buildSectionTitle(String title) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(title, style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(title, style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 10.5, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
     );
   }
 
@@ -483,22 +650,22 @@ class _SettingsDialogState extends State<SettingsDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w500)),
-        const SizedBox(height: 5),
+        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.w500)),
+        const SizedBox(height: 4),
         TextField(
           controller: controller,
           keyboardType: keyboardType,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
+          style: const TextStyle(color: Colors.white, fontSize: 12.5),
           decoration: InputDecoration(
-            prefixIcon: Icon(icon, color: const Color(0xFF00E5FF), size: 16),
+            prefixIcon: Icon(icon, color: const Color(0xFF00E5FF), size: 15),
             hintText: hint,
-            hintStyle: const TextStyle(color: Colors.white24, fontSize: 12),
+            hintStyle: const TextStyle(color: Colors.white24, fontSize: 11.5),
             filled: true,
             fillColor: Colors.white.withValues(alpha: 0.05),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
-            focusedBorder: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12)), borderSide: BorderSide(color: Color(0xFF00E5FF))),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+            focusedBorder: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10)), borderSide: BorderSide(color: Color(0xFF00E5FF))),
           ),
         ),
       ],

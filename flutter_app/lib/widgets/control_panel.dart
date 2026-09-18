@@ -62,12 +62,13 @@ class _ControlPanelState extends State<ControlPanel>
     final data = svc.data;
     final isRelayOn = svc.displayRelayState;
     final isAuto = svc.displayAutoMode;
+    final isSolarBackup = svc.displaySolarBackup;
     final isAlive = svc.isNodeMcuAlive;
     final timerActive = data.timerActive;
     final remainingSecs = data.timerRemainingSeconds;
 
     return Container(
-      padding: const EdgeInsets.all(22),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(24),
         gradient: LinearGradient(
@@ -100,20 +101,20 @@ class _ControlPanelState extends State<ControlPanel>
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(7),
                     decoration: BoxDecoration(
                       color: const Color(0xFF7C4DFF).withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.tune, color: Color(0xFFB388FF), size: 18),
+                    child: const Icon(Icons.tune, color: Color(0xFFB388FF), size: 17),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   Text(
                     loc.tr('app_title'),
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
-                      fontSize: 16,
+                      fontSize: 15,
                     ),
                   ),
                 ],
@@ -121,12 +122,12 @@ class _ControlPanelState extends State<ControlPanel>
               // Schedule badge
               if (data.scheduleEnabled)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: data.isScheduleWindow
                         ? const Color(0xFF00E676).withValues(alpha: 0.15)
                         : Colors.white.withValues(alpha: 0.06),
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(16),
                     border: Border.all(
                       color: data.isScheduleWindow
                           ? const Color(0xFF00E676).withValues(alpha: 0.5)
@@ -138,14 +139,14 @@ class _ControlPanelState extends State<ControlPanel>
                     children: [
                       Icon(
                         Icons.schedule,
-                        size: 13,
+                        size: 12,
                         color: data.isScheduleWindow ? const Color(0xFF00E676) : Colors.white60,
                       ),
-                      const SizedBox(width: 5),
+                      const SizedBox(width: 4),
                       Text(
                         '${data.chargeStartHour.toString().padLeft(2, '0')}:00–${data.chargeStopHour.toString().padLeft(2, '0')}:00',
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: 10.5,
                           fontWeight: FontWeight.w600,
                           color: data.isScheduleWindow ? const Color(0xFF00E676) : Colors.white60,
                         ),
@@ -155,7 +156,7 @@ class _ControlPanelState extends State<ControlPanel>
                 ),
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
 
           // ── BIG POWER BUTTON ──
           Center(
@@ -173,21 +174,19 @@ class _ControlPanelState extends State<ControlPanel>
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      // Outer glow when ON
                       if (isRelayOn)
                         Container(
-                          width: 136,
-                          height: 136,
+                          width: 120,
+                          height: 120,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: const Color(0xFF00E676)
                                 .withValues(alpha: 0.15 * _glowAnimation.value),
                           ),
                         ),
-                      // Middle ring
                       Container(
-                        width: 114,
-                        height: 114,
+                        width: 104,
+                        height: 104,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color: isRelayOn
@@ -197,35 +196,28 @@ class _ControlPanelState extends State<ControlPanel>
                             color: isRelayOn
                                 ? const Color(0xFF00E676).withValues(alpha: 0.7)
                                 : Colors.white24,
-                            width: 2.2,
+                            width: 2.0,
                           ),
                           boxShadow: isRelayOn
                               ? [
                                   BoxShadow(
                                     color: const Color(0xFF00E676).withValues(alpha: 0.35),
-                                    blurRadius: 20,
-                                    spreadRadius: 2,
+                                    blurRadius: 18,
+                                    spreadRadius: 1,
                                   ),
                                 ]
                               : [],
                         ),
                       ),
-                      // Inner button
                       Container(
-                        width: 86,
-                        height: 86,
+                        width: 80,
+                        height: 80,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           gradient: RadialGradient(
                             colors: isRelayOn
-                                ? [
-                                    const Color(0xFF00E676),
-                                    const Color(0xFF00B248),
-                                  ]
-                                : [
-                                    const Color(0xFF26324D),
-                                    const Color(0xFF161E30),
-                                  ],
+                                ? [const Color(0xFF00E676), const Color(0xFF00B248)]
+                                : [const Color(0xFF26324D), const Color(0xFF161E30)],
                           ),
                           boxShadow: [
                             BoxShadow(
@@ -237,7 +229,7 @@ class _ControlPanelState extends State<ControlPanel>
                         ),
                         child: Icon(
                           Icons.power_settings_new_rounded,
-                          size: 40,
+                          size: 38,
                           color: isRelayOn ? Colors.black : Colors.white54,
                         ),
                       ),
@@ -248,26 +240,26 @@ class _ControlPanelState extends State<ControlPanel>
             ),
           ),
 
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Center(
             child: Text(
               isRelayOn ? loc.tr('turn_off') : loc.tr('turn_on'),
               style: TextStyle(
                 color: isRelayOn ? const Color(0xFF00E676) : Colors.white70,
-                fontSize: 14,
+                fontSize: 13,
                 fontWeight: FontWeight.bold,
               ),
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 14),
 
-          // ── AUTO / MANUAL MODE TOGGLE ──
+          // ── SMART AUTO MODE TILE ──
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -278,15 +270,11 @@ class _ControlPanelState extends State<ControlPanel>
                     children: [
                       Text(
                         isAuto ? loc.tr('auto_mode') : loc.tr('manual_mode'),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.bold),
                       ),
                       Text(
                         isAuto ? loc.tr('auto_mode_sub') : loc.tr('manual_mode_sub'),
-                        style: const TextStyle(color: Colors.white38, fontSize: 11),
+                        style: const TextStyle(color: Colors.white38, fontSize: 10.5),
                       ),
                     ],
                   ),
@@ -309,42 +297,108 @@ class _ControlPanelState extends State<ControlPanel>
             ),
           ),
 
-          const SizedBox(height: 18),
+          const SizedBox(height: 8),
 
-          // ── REALTIME COUNTDOWN TIMER ──
+          // ── SOLAR BACKUP (CLOUDY DAY AUTO-CHARGE) TILE ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: isSolarBackup
+                  ? const Color(0xFFFFAB40).withValues(alpha: 0.08)
+                  : Colors.white.withValues(alpha: 0.03),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isSolarBackup
+                    ? const Color(0xFFFFAB40).withValues(alpha: 0.25)
+                    : Colors.white.withValues(alpha: 0.07),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.wb_cloudy_outlined,
+                              color: isSolarBackup ? const Color(0xFFFFAB40) : Colors.white54, size: 14),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              loc.tr('solar_backup'),
+                              style: TextStyle(
+                                color: isSolarBackup ? const Color(0xFFFFAB40) : Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        loc.tr('solar_backup_sub'),
+                        style: const TextStyle(color: Colors.white38, fontSize: 10),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: isSolarBackup,
+                  activeThumbColor: const Color(0xFFFFAB40),
+                  activeTrackColor: const Color(0xFFFFAB40).withValues(alpha: 0.3),
+                  inactiveThumbColor: Colors.white38,
+                  inactiveTrackColor: Colors.white10,
+                  onChanged: (val) {
+                    if (!isAlive) {
+                      ToastService.instance.warning(loc.tr('nodemcu_power_off_warning'));
+                      return;
+                    }
+                    svc.setSolarBackupMode(val);
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 14),
+
+          // ── COUNTDOWN TIMER ──
           Row(
             children: [
-              const Icon(Icons.timer_outlined, color: Color(0xFFFFAB40), size: 16),
+              const Icon(Icons.timer_outlined, color: Color(0xFFFFAB40), size: 15),
               const SizedBox(width: 6),
               Text(
                 loc.tr('quick_timer'),
-                style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
+                style: const TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.bold),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
 
           if (timerActive && remainingSecs > 0) ...[
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 color: const Color(0xFFFFAB40).withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFFFFAB40).withValues(alpha: 0.4)),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.alarm_on, color: Color(0xFFFFAB40), size: 20),
-                  const SizedBox(width: 10),
+                  const Icon(Icons.alarm_on, color: Color(0xFFFFAB40), size: 18),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(loc.tr('timer_running'),
-                            style: const TextStyle(color: Color(0xFFFFAB40), fontSize: 11, fontWeight: FontWeight.bold)),
+                            style: const TextStyle(color: Color(0xFFFFAB40), fontSize: 10.5, fontWeight: FontWeight.bold)),
                         Text(
                           '${loc.tr('timer_remaining')}: ${_formatTimerDuration(remainingSecs, isBn)}',
-                          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900),
+                          style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w900),
                         ),
                       ],
                     ),
@@ -353,11 +407,11 @@ class _ControlPanelState extends State<ControlPanel>
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFFF5252),
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       visualDensity: VisualDensity.compact,
                     ),
                     onPressed: () => svc.setTimer(0),
-                    child: Text(loc.tr('cancel_timer'), style: const TextStyle(fontSize: 11)),
+                    child: Text(loc.tr('cancel_timer'), style: const TextStyle(fontSize: 10.5)),
                   ),
                 ],
               ),
@@ -366,11 +420,11 @@ class _ControlPanelState extends State<ControlPanel>
             Row(
               children: [
                 _TimerButton(label: loc.tr('min_30'), minutes: 30, svc: svc, isAlive: isAlive),
-                const SizedBox(width: 6),
+                const SizedBox(width: 5),
                 _TimerButton(label: loc.tr('hour_1'), minutes: 60, svc: svc, isAlive: isAlive),
-                const SizedBox(width: 6),
+                const SizedBox(width: 5),
                 _TimerButton(label: loc.tr('hour_2'), minutes: 120, svc: svc, isAlive: isAlive),
-                const SizedBox(width: 6),
+                const SizedBox(width: 5),
                 _TimerButton(label: loc.tr('hour_4'), minutes: 240, svc: svc, isAlive: isAlive),
               ],
             ),
@@ -401,7 +455,7 @@ class _TimerButton extends StatelessWidget {
         style: OutlinedButton.styleFrom(
           foregroundColor: Colors.white,
           side: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
-          padding: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(vertical: 6),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           visualDensity: VisualDensity.compact,
         ),
@@ -412,7 +466,7 @@ class _TimerButton extends StatelessWidget {
           }
           svc.setTimer(minutes);
         },
-        child: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+        child: Text(label, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
       ),
     );
   }
