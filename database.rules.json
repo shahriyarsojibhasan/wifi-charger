@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "wifi_charger": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}
