@@ -16,6 +16,7 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
 #include <DNSServer.h>
 #include <WiFiClientSecure.h>
 #include <EEPROM.h>
@@ -137,6 +138,11 @@ void setup() {
   server.begin();
   Serial.println("[HTTP] Local server active on port 80");
 
+  if (MDNS.begin("wifi-charger")) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("[mDNS] Responder active at: http://wifi-charger.local");
+  }
+
   lastSecondTick = millis();
 }
 
@@ -144,6 +150,8 @@ void setup() {
 // 2. MAIN EXECUTION LOOP
 // ====================================================================================================
 void loop() {
+  MDNS.update();
+
   if (isPortalActive) {
     dnsServer.processNextRequest();
   }
@@ -520,6 +528,176 @@ void startWiFiOrProvisioning() {
   setupCaptivePortal();
 }
 
+const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>VoltPulse Smart Charger</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#070b14;color:#e0e6ed;padding:16px;}
+    .wrap{max-width:440px;margin:0 auto;}
+    .hdr{text-align:center;margin-bottom:14px;}
+    .hdr h1{font-size:20px;color:#00e5ff;font-weight:800;letter-spacing:0.5px;}
+    .hdr p{font-size:11.5px;color:#78909c;margin-top:3px;}
+    .tabs{display:flex;background:#101726;border-radius:12px;padding:4px;margin-bottom:14px;border:1px solid #1e293b;}
+    .tab{flex:1;padding:10px 0;text-align:center;font-size:12.5px;font-weight:700;border-radius:8px;cursor:pointer;color:#94a3b8;transition:0.2s;}
+    .tab.active{background:#00e5ff;color:#000;}
+    .card{background:#0f172a;border-radius:16px;padding:18px;border:1px solid #1e293b;margin-bottom:14px;box-shadow:0 4px 20px rgba(0,0,0,0.5);}
+    .v-box{text-align:center;padding:14px;background:rgba(0,229,255,0.06);border-radius:12px;border:1px solid rgba(0,229,255,0.25);margin-bottom:14px;}
+    .v-val{font-size:32px;font-weight:800;color:#00e5ff;}
+    .v-lbl{font-size:11px;text-transform:uppercase;color:#64748b;letter-spacing:1px;margin-top:2px;}
+    .pwr-btn{width:100%;padding:16px;border:none;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;transition:0.2s;margin-bottom:10px;}
+    .pwr-on{background:#00e676;color:#000;box-shadow:0 0 20px rgba(0,230,118,0.35);}
+    .pwr-off{background:#1e293b;color:#94a3b8;}
+    .row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1e293b;}
+    .row:last-child{border-bottom:none;}
+    .btn-row{display:flex;gap:6px;margin-top:8px;}
+    .sm-btn{flex:1;padding:10px 2px;background:#1e293b;color:#cbd5e1;border:1px solid #334155;border-radius:8px;font-size:11.5px;font-weight:700;cursor:pointer;}
+    .sm-btn:active{background:#00e5ff;color:#000;}
+    .net-item{display:flex;justify-content:space-between;align-items:center;padding:12px;background:#101726;border-radius:10px;border:1px solid #1e293b;margin-bottom:8px;cursor:pointer;}
+    .net-item:hover,.net-item.sel{border-color:#00e5ff;background:rgba(0,229,255,0.08);}
+    .inp{width:100%;padding:12px 14px;background:#080c18;border:1px solid #334155;border-radius:10px;color:#fff;font-size:14px;margin-bottom:12px;}
+    .btn-submit{width:100%;padding:14px;background:#00e5ff;color:#000;border:none;border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;}
+    .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:10px 18px;border-radius:8px;font-size:12.5px;font-weight:700;display:none;z-index:99;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <h1>⚡ VoltPulse Smart Hub</h1>
+    <p id="sub-ip">Offline Realtime Controller & Wi-Fi Setup</p>
+  </div>
+  <div class="tabs">
+    <div class="tab active" id="t1" onclick="sw('dash')">⚡ Controller</div>
+    <div class="tab" id="t2" onclick="sw('wifi')">📶 Wi-Fi Setup</div>
+  </div>
+
+  <div id="dash-view">
+    <div class="card">
+      <div class="v-box">
+        <div class="v-val" id="v-val">--.- V</div>
+        <div class="v-lbl" id="v-lbl">Battery Voltage</div>
+      </div>
+      <button class="pwr-btn pwr-off" id="pwr-btn" onclick="tgRelay()">TURN CHARGER ON</button>
+      <div class="row">
+        <span style="font-size:13px;font-weight:600;">Smart Auto Mode</span>
+        <input type="checkbox" id="auto-chk" onchange="tgAuto(this.checked)" style="transform:scale(1.35);">
+      </div>
+      <div class="row">
+        <span style="font-size:13px;font-weight:600;">Cloudy Solar Backup</span>
+        <span id="solar-badge" style="font-size:12px;font-weight:700;color:#f59e0b;">Active</span>
+      </div>
+      <div class="row">
+        <span style="font-size:13px;font-weight:600;">Timer Remaining</span>
+        <span id="timer-badge" style="font-size:12px;font-weight:700;color:#38bdf8;">Inactive</span>
+      </div>
+      <div style="margin-top:12px;">
+        <span style="font-size:11.5px;color:#94a3b8;font-weight:700;">QUICK TIMER CUTOFF:</span>
+        <div class="btn-row">
+          <button class="sm-btn" onclick="setT(15)">15M</button>
+          <button class="sm-btn" onclick="setT(30)">30M</button>
+          <button class="sm-btn" onclick="setT(60)">60M</button>
+          <button class="sm-btn" onclick="setT(0)" style="color:#f87171;">OFF</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="wifi-view" style="display:none;">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="font-size:12.5px;font-weight:700;color:#94a3b8;">SCANNED WI-FI NETWORKS:</span>
+        <button class="sm-btn" style="flex:none;padding:6px 12px;" onclick="scan()">🔄 Scan</button>
+      </div>
+      <div id="wifi-list" style="max-height:190px;overflow-y:auto;margin-bottom:14px;">
+        <div style="text-align:center;padding:14px;color:#64748b;font-size:12px;">Tap 'Scan' or wait...</div>
+      </div>
+
+      <form action="/save" method="POST">
+        <label style="font-size:11px;color:#94a3b8;font-weight:700;">NETWORK NAME (SSID):</label>
+        <input class="inp" type="text" id="ssid" name="ssid" placeholder="Tap network above or type name" required>
+        <label style="font-size:11px;color:#94a3b8;font-weight:700;">WI-FI PASSWORD:</label>
+        <div style="position:relative;">
+          <input class="inp" type="password" id="pass" name="pass" placeholder="Enter password" required style="padding-right:40px;">
+          <span onclick="tgPass()" style="position:absolute;right:12px;top:10px;cursor:pointer;font-size:16px;">👁️</span>
+        </div>
+        <button type="submit" class="btn-submit">Connect & Save</button>
+      </form>
+    </div>
+  </div>
+</div>
+<div class="toast" id="tst"></div>
+
+<script>
+let curRelay=false, curAuto=true;
+function sw(t){
+  document.getElementById('dash-view').style.display=(t==='dash')?'block':'none';
+  document.getElementById('wifi-view').style.display=(t==='wifi')?'block':'none';
+  document.getElementById('t1').className='tab '+(t==='dash'?'active':'');
+  document.getElementById('t2').className='tab '+(t==='wifi'?'active':'');
+  if(t==='wifi') scan();
+}
+function pop(m){
+  let t=document.getElementById('tst'); t.innerText=m; t.style.display='block';
+  setTimeout(()=>t.style.display='none',2200);
+}
+function tgPass(){
+  let p=document.getElementById('pass'); p.type=(p.type==='password')?'text':'password';
+}
+function update(d){
+  if(!d||!d.telemetry) return;
+  let t=d.telemetry;
+  curRelay=t.relay_state; curAuto=t.auto_mode;
+  let vb=document.getElementById('v-val'), vl=document.getElementById('v-lbl');
+  if(t.sensor_mode>0){ vb.innerText=t.battery_voltage.toFixed(2)+' V'; vl.innerText='Battery Voltage'; }
+  else { vb.innerText='NO SENSOR'; vl.innerText='Timer & Relay Active'; }
+  let pb=document.getElementById('pwr-btn');
+  pb.className='pwr-btn '+(curRelay?'pwr-on':'pwr-off');
+  pb.innerText=curRelay?'⚡ CHARGER ON (TAP TO STOP)':'🔌 CHARGER OFF (TAP TO START)';
+  document.getElementById('auto-chk').checked=curAuto;
+  document.getElementById('solar-badge').innerText=t.solar_backup?'Active':'Disabled';
+  document.getElementById('timer-badge').innerText=(t.timer_active&&t.timer_remaining_seconds>0)?Math.ceil(t.timer_remaining_seconds/60)+' min':'Inactive';
+  if(t.device_ip) document.getElementById('sub-ip').innerText='NodeMCU IP: '+t.device_ip;
+}
+function poll(){
+  fetch('/api/status').then(r=>r.json()).then(update).catch(()=>{});
+}
+function tgRelay(){
+  fetch('/api/control?relay='+(curRelay?0:1)).then(r=>r.json()).then(()=>{ poll(); pop('Relay toggled'); });
+}
+function tgAuto(v){
+  fetch('/api/control?auto='+(v?1:0)).then(r=>r.json()).then(()=>{ poll(); pop('Auto mode '+(v?'on':'off')); });
+}
+function setT(m){
+  fetch('/api/timer?minutes='+m).then(r=>r.json()).then(()=>{ poll(); pop(m>0?m+'m timer set':'Timer stopped'); });
+}
+function scan(){
+  let wl=document.getElementById('wifi-list');
+  wl.innerHTML='<div style="text-align:center;padding:12px;color:#64748b;font-size:12px;">Scanning networks...</div>';
+  fetch('/api/scan_wifi').then(r=>r.json()).then(nets=>{
+    if(!nets||!nets.length){ wl.innerHTML='<div style="text-align:center;padding:10px;color:#f87171;font-size:12px;">No networks found</div>'; return; }
+    wl.innerHTML='';
+    nets.forEach(n=>{
+      let div=document.createElement('div');
+      div.className='net-item';
+      div.innerHTML='<div><strong>'+n.ssid+'</strong><div style="font-size:10.5px;color:#64748b;">Signal: '+n.quality+'% '+(n.secure?'🔒':'🔓')+'</div></div><span style="color:#00e5ff;font-size:12px;font-weight:700;">Select</span>';
+      div.onclick=()=>{
+        document.getElementById('ssid').value=n.ssid;
+        document.querySelectorAll('.net-item').forEach(e=>e.classList.remove('sel'));
+        div.classList.add('sel');
+        document.getElementById('pass').focus();
+      };
+      wl.appendChild(div);
+    });
+  }).catch(()=>{ wl.innerHTML='<div style="text-align:center;padding:10px;color:#f87171;">Scan error. Retry.</div>'; });
+}
+setInterval(poll,2000); poll();
+</script>
+</body>
+</html>)rawliteral";
+
 void setupCaptivePortal() {
   isPortalActive = true;
   WiFi.mode(WIFI_AP_STA);
@@ -530,45 +708,27 @@ void setupCaptivePortal() {
   Serial.println(WiFi.softAPIP());
 
   server.on("/", HTTP_GET, []() {
-    int n = WiFi.scanNetworks();
-    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-    html += "<title>VoltPulse WiFi Setup</title><style>";
-    html += "body{font-family:sans-serif;background:#080c18;color:#fff;padding:20px;}";
-    html += ".card{background:#131828;padding:24px;border-radius:16px;max-width:400px;margin:auto;border:1px solid #00e5ff33;}";
-    html += "input,select{width:100%;padding:12px;margin:8px 0 16px 0;box-sizing:border-box;border-radius:10px;border:1px solid #334;background:#0b0f19;color:#fff;font-size:15px;}";
-    html += "button{width:100%;padding:14px;background:#00e676;color:#000;border:none;border-radius:10px;font-weight:bold;font-size:16px;cursor:pointer;}";
-    html += "</style></head><body><div class='card'>";
-    html += "<h2 style='color:#00e5ff;margin-top:0;'>⚡ VoltPulse WiFi Setup</h2>";
-    html += "<p style='color:#889;'>Select your Wi-Fi network:</p>";
-    html += "<form action='/save' method='POST'>";
-    html += "<select name='ssid'>";
-    for (int i = 0; i < n; ++i) {
-      html += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + "</option>";
-    }
-    html += "</select>";
-    html += "<p style='color:#889;'>Or enter hidden network SSID:</p>";
-    html += "<input type='text' name='manual_ssid' placeholder='Hidden Network Name'>";
-    html += "<p style='color:#889;'>Password:</p>";
-    html += "<input type='password' name='pass' placeholder='Wi-Fi Password' required>";
-    html += "<button type='submit'>Connect</button>";
-    html += "</form></div></body></html>";
-    server.send(200, "text/html", html);
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send_P(200, "text/html", INDEX_HTML);
   });
 
   server.on("/save", HTTP_POST, []() {
-    String chosenSsid = server.arg("manual_ssid");
-    if (chosenSsid.length() == 0) chosenSsid = server.arg("ssid");
+    String chosenSsid = server.arg("ssid");
     String pass = server.arg("pass");
 
-    strncpy(sysConfig.wifi_ssid, chosenSsid.c_str(), sizeof(sysConfig.wifi_ssid));
-    strncpy(sysConfig.wifi_pass, pass.c_str(), sizeof(sysConfig.wifi_pass));
-    savePersistentConfig();
+    if (chosenSsid.length() > 0) {
+      strncpy(sysConfig.wifi_ssid, chosenSsid.c_str(), sizeof(sysConfig.wifi_ssid));
+      strncpy(sysConfig.wifi_pass, pass.c_str(), sizeof(sysConfig.wifi_pass));
+      savePersistentConfig();
 
-    String html = "<html><body style='background:#080c18;color:#00e676;font-family:sans-serif;padding:30px;text-align:center;'>";
-    html += "<h2>✓ Saved!</h2><p style='color:#aaa;'>Connecting to " + chosenSsid + "...</p></body></html>";
-    server.send(200, "text/html", html);
-    delay(1500);
-    ESP.restart();
+      String html = "<html><body style='background:#080c18;color:#00e676;font-family:sans-serif;padding:30px;text-align:center;'>";
+      html += "<h2>✓ Saved!</h2><p style='color:#aaa;'>Connecting to " + chosenSsid + "...</p></body></html>";
+      server.send(200, "text/html", html);
+      delay(1500);
+      ESP.restart();
+    } else {
+      server.send(400, "text/html", "Missing SSID");
+    }
   });
 
   server.onNotFound([]() {
@@ -611,6 +771,19 @@ void connectToNewWifi(const char* ssid, const char* pass) {
 // 8. LOCAL WEB SERVER & REST API (With Offline Direct HTTP Support)
 // ====================================================================================================
 void setupLocalWebServer() {
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send_P(200, "text/html", INDEX_HTML);
+  });
+
+  server.on("/api/weather", HTTP_GET, []() {
+    if (server.hasArg("cloudy")) {
+      isCloudyDaySignal = (server.arg("cloudy") == "1");
+    }
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", "{\"success\":true,\"is_cloudy\":" + String(isCloudyDaySignal ? "true" : "false") + "}");
+  });
+
   server.on("/api/set_wifi", HTTP_GET, []() {
     if (server.hasArg("ssid") && server.hasArg("pass")) {
       String newSsid = server.arg("ssid");
@@ -628,7 +801,10 @@ void setupLocalWebServer() {
     String json = "[";
     for (int i = 0; i < n; ++i) {
       if (i > 0) json += ",";
-      json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+      int rssi = WiFi.RSSI(i);
+      int quality = (rssi <= -100) ? 0 : ((rssi >= -50) ? 100 : 2 * (rssi + 100));
+      bool secure = (WiFi.encryptionType(i) != ENC_TYPE_NONE);
+      json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"quality\":" + String(quality) + ",\"secure\":" + String(secure ? "true" : "false") + "}";
     }
     json += "]";
     server.sendHeader("Access-Control-Allow-Origin", "*");

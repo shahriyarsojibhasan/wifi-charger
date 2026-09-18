@@ -441,15 +441,51 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       activeThumbColor: const Color(0xFF00E5FF),
                       onChanged: (val) => setState(() => _useLocalEsp = val),
                     ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF00E5FF),
+                              side: const BorderSide(color: Color(0xFF00E5FF)),
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: const Icon(Icons.radar, size: 16),
+                            label: Text(
+                              isBn ? 'অটো আইপি খুঁজুন (Auto Scan)' : 'Auto Detect NodeMCU IP',
+                              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                            ),
+                            onPressed: () async {
+                              final found = await widget.service.autoDiscoverLocalEsp();
+                              if (found != null) {
+                                setState(() {
+                                  _useLocalEsp = true;
+                                  _localIpCtrl.text = found;
+                                });
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
                     if (_useLocalEsp) ...[
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 10),
                       _buildTextField(
                         controller: _localIpCtrl,
                         label: loc.tr('local_ip_label'),
-                        hint: '192.168.4.1',
+                        hint: '192.168.0.146 or wifi-charger.local',
                         icon: Icons.router,
                       ),
                     ],
+                    const SizedBox(height: 6),
+                    Text(
+                      isBn
+                          ? 'বর্তমান নোডএমসিইউ আইপি: ${widget.service.data.deviceIp.isNotEmpty ? widget.service.data.deviceIp : widget.service.localEspIp}'
+                          : 'Detected NodeMCU IP: ${widget.service.data.deviceIp.isNotEmpty ? widget.service.data.deviceIp : widget.service.localEspIp}',
+                      style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
                   ],
                 ),
               ),

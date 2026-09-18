@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/firebase_service.dart';
 import '../services/localization_service.dart';
 import '../services/toast_service.dart';
+import '../services/weather_service.dart';
 
 class ControlPanel extends StatefulWidget {
   final FirebaseService service;
@@ -297,70 +298,82 @@ class _ControlPanelState extends State<ControlPanel>
             ),
           ),
 
-          const SizedBox(height: 8),
-
           // ── SOLAR BACKUP (CLOUDY DAY AUTO-CHARGE) TILE ──
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: isSolarBackup
-                  ? const Color(0xFFFFAB40).withValues(alpha: 0.08)
-                  : Colors.white.withValues(alpha: 0.03),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: isSolarBackup
-                    ? const Color(0xFFFFAB40).withValues(alpha: 0.25)
-                    : Colors.white.withValues(alpha: 0.07),
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.wb_cloudy_outlined,
-                              color: isSolarBackup ? const Color(0xFFFFAB40) : Colors.white54, size: 14),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              loc.tr('solar_backup'),
-                              style: TextStyle(
-                                color: isSolarBackup ? const Color(0xFFFFAB40) : Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
+          ListenableBuilder(
+            listenable: WeatherService.instance,
+            builder: (context, _) {
+              if (WeatherService.instance.hideWeatherCard) {
+                return const SizedBox.shrink();
+              }
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: isSolarBackup
+                          ? const Color(0xFFFFAB40).withValues(alpha: 0.08)
+                          : Colors.white.withValues(alpha: 0.03),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: isSolarBackup
+                            ? const Color(0xFFFFAB40).withValues(alpha: 0.25)
+                            : Colors.white.withValues(alpha: 0.07),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.wb_cloudy_outlined,
+                                      color: isSolarBackup ? const Color(0xFFFFAB40) : Colors.white54, size: 14),
+                                  const SizedBox(width: 6),
+                                  Flexible(
+                                    child: Text(
+                                      loc.tr('solar_backup'),
+                                      style: TextStyle(
+                                        color: isSolarBackup ? const Color(0xFFFFAB40) : Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                              Text(
+                                loc.tr('solar_backup_sub'),
+                                style: const TextStyle(color: Colors.white38, fontSize: 10),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      Text(
-                        loc.tr('solar_backup_sub'),
-                        style: const TextStyle(color: Colors.white38, fontSize: 10),
-                      ),
-                    ],
+                        ),
+                        Switch(
+                          value: isSolarBackup,
+                          activeThumbColor: const Color(0xFFFFAB40),
+                          activeTrackColor: const Color(0xFFFFAB40).withValues(alpha: 0.3),
+                          inactiveThumbColor: Colors.white38,
+                          inactiveTrackColor: Colors.white10,
+                          onChanged: (val) {
+                            if (!isAlive) {
+                              ToastService.instance.warning(loc.tr('nodemcu_power_off_warning'));
+                              return;
+                            }
+                            svc.setSolarBackupMode(val);
+                          },
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                Switch(
-                  value: isSolarBackup,
-                  activeThumbColor: const Color(0xFFFFAB40),
-                  activeTrackColor: const Color(0xFFFFAB40).withValues(alpha: 0.3),
-                  inactiveThumbColor: Colors.white38,
-                  inactiveTrackColor: Colors.white10,
-                  onChanged: (val) {
-                    if (!isAlive) {
-                      ToastService.instance.warning(loc.tr('nodemcu_power_off_warning'));
-                      return;
-                    }
-                    svc.setSolarBackupMode(val);
-                  },
-                ),
-              ],
-            ),
+                ],
+              );
+            },
           ),
 
           const SizedBox(height: 14),

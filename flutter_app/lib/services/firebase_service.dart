@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/charger_data.dart';
 import 'toast_service.dart';
 import 'localization_service.dart';
@@ -21,6 +22,7 @@ class FirebaseService extends ChangeNotifier {
   bool _waitingForFirstData = true;
   String _lastError = '';
   int _consecutiveFailures = 0;
+  bool _hasNotifiedDisconnected = false;
 
   // Heartbeat tracking to detect real NodeMCU power loss
   int _lastUptime = -1;
@@ -59,10 +61,33 @@ class FirebaseService extends ChangeNotifier {
       _optimisticSensorMode ?? _data.sensorMode;
 
   FirebaseService() {
+    _loadCachedIp();
     WeatherService.instance.onWeatherUpdated = (w) {
       syncWeatherToCloud(w);
     };
     startSync();
+  }
+
+  Future<void> _loadCachedIp() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedIp = prefs.getString('cached_nodemcu_ip');
+      if (savedIp != null && savedIp.isNotEmpty) {
+        _localEspIp = savedIp;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _cacheDeviceIp(String ip) async {
+    if (ip.isEmpty || ip == '0.0.0.0' || ip == '192.168.4.1') return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_nodemcu_ip', ip);
+      if (!_useLocalEsp && _localEspIp == '192.168.4.1') {
+        _localEspIp = ip;
+      }
+    } catch (_) {}
   }
 
   void updateSettings({
@@ -78,6 +103,7 @@ class FirebaseService extends ChangeNotifier {
     }
     if (localEspIp != null && localEspIp.trim().isNotEmpty) {
       _localEspIp = localEspIp.trim();
+      _cacheDeviceIp(_localEspIp);
     }
     if (deviceId != null && deviceId.trim().isNotEmpty) {
       _deviceId = deviceId.trim();
@@ -85,6 +111,48 @@ class FirebaseService extends ChangeNotifier {
     if (useLocalEsp != null) _useLocalEsp = useLocalEsp;
     notifyListeners();
     fetchData();
+  }
+
+  Future<String?> autoDiscoverLocalEsp() async {
+    _isLoading = true;
+    notifyListeners();
+
+    final candidates = [
+      _localEspIp,
+      'wifi-charger.local',
+      '192.168.4.1',
+      '192.168.0.146',
+      '192.168.0.100',
+      '192.168.1.100',
+    ];
+
+    for (final ip in candidates) {
+      if (ip.isEmpty) continue;
+      try {
+        final uri = Uri.parse('http://$ip/api/status');
+        final res = await http.get(uri).timeout(const Duration(milliseconds: 1400));
+        if (res.statusCode == 200 && res.body.contains('"telemetry"')) {
+          _localEspIp = ip;
+          _useLocalEsp = true;
+          await _cacheDeviceIp(ip);
+          _isLoading = false;
+          notifyListeners();
+          await fetchData();
+          final isBn = LocalizationService.instance.isBengali;
+          ToastService.instance.success(
+            isBn ? 'নোডএমসিইউ লোকাল আইপি ($ip) পাওয়া গেছে ✓' : 'NodeMCU IP ($ip) detected ✓',
+          );
+          return ip;
+        }
+      } catch (_) {}
+    }
+    _isLoading = false;
+    notifyListeners();
+    final isBn = LocalizationService.instance.isBengali;
+    ToastService.instance.warning(
+      isBn ? 'লোকাল আইপি পাওয়া যায়নি। রাউটারে কানেক্টেড কি না যাচাই করুন।' : 'Local IP not found. Ensure same Wi-Fi.',
+    );
+    return null;
   }
 
   void startSync({int intervalMs = 1000}) {
@@ -108,12 +176,24 @@ class FirebaseService extends ChangeNotifier {
           final uri = Uri.parse('$_databaseUrl/devices/$_deviceId.json');
           response = await http.get(uri).timeout(const Duration(seconds: 3));
         } catch (_) {
-          // Cloud failed (no internet) - Try direct local IP fallback!
+          // Cloud failed (no internet) - Fallback cascade!
           try {
             final localUri = Uri.parse('http://$_localEspIp/api/status');
             response = await http.get(localUri).timeout(const Duration(seconds: 2));
           } catch (_) {
-            rethrow;
+            try {
+              final mdnsUri = Uri.parse('http://wifi-charger.local/api/status');
+              response = await http.get(mdnsUri).timeout(const Duration(seconds: 2));
+              _localEspIp = 'wifi-charger.local';
+            } catch (_) {
+              try {
+                final apUri = Uri.parse('http://192.168.4.1/api/status');
+                response = await http.get(apUri).timeout(const Duration(seconds: 2));
+                _localEspIp = '192.168.4.1';
+              } catch (_) {
+                rethrow;
+              }
+            }
           }
         }
       }
@@ -136,6 +216,13 @@ class FirebaseService extends ChangeNotifier {
           _consecutiveFailures = 0;
           _lastError = '';
 
+          // Cache router-assigned IP
+          if (parsedData.deviceIp.isNotEmpty &&
+              parsedData.deviceIp != '0.0.0.0' &&
+              parsedData.deviceIp != '192.168.4.1') {
+            _cacheDeviceIp(parsedData.deviceIp);
+          }
+
           // Heartbeat freshness
           final newUptime = parsedData.uptimeSecs;
           final newSeq = parsedData.heartbeatSeq;
@@ -150,6 +237,13 @@ class FirebaseService extends ChangeNotifier {
             _lastHeartbeatSeq = newSeq;
             _lastFreshDataTime = DateTime.now();
             _stagnantHeartbeatCount = 0;
+            if (!_isNodeMcuAlive && _hasNotifiedDisconnected) {
+              _hasNotifiedDisconnected = false;
+              final isBn = LocalizationService.instance.isBengali;
+              ToastService.instance.success(
+                isBn ? 'নোডএমসিইউ পুনরায় সংযুক্ত হয়েছে ✓' : 'NodeMCU reconnected ✓',
+              );
+            }
             _isNodeMcuAlive = true;
           } else {
             _stagnantHeartbeatCount++;
@@ -160,12 +254,13 @@ class FirebaseService extends ChangeNotifier {
             if (elapsed >= 8 || _stagnantHeartbeatCount >= 7) {
               final wasAlive = _isNodeMcuAlive;
               _isNodeMcuAlive = false;
-              if (wasAlive) {
+              if (wasAlive && !_hasNotifiedDisconnected) {
+                _hasNotifiedDisconnected = true;
                 final isBn = LocalizationService.instance.isBengali;
                 ToastService.instance.warning(
                   isBn
-                      ? 'নোডএমসিইউ পাওয়ার অফ বা বিচ্ছিন্ন হয়েছে!'
-                      : 'NodeMCU has no power or Wi-Fi disconnected!',
+                      ? 'নোডএমসিইউ পাওয়ার অফ বা বিচ্ছিন্ন হয়েছে'
+                      : 'NodeMCU power off or disconnected',
                 );
               }
             }
@@ -198,7 +293,14 @@ class FirebaseService extends ChangeNotifier {
   }
 
   Future<void> syncWeatherToCloud(WeatherData w) async {
-    if (_useLocalEsp) return;
+    if (_useLocalEsp) {
+      try {
+        final localUri = Uri.parse(
+            'http://$_localEspIp/api/weather?cloudy=${w.isCloudy ? 1 : 0}');
+        await http.get(localUri).timeout(const Duration(seconds: 2));
+      } catch (_) {}
+      return;
+    }
     try {
       final uri = Uri.parse('$_databaseUrl/devices/$_deviceId/weather.json');
       await http
@@ -215,6 +317,15 @@ class FirebaseService extends ChangeNotifier {
             }),
           )
           .timeout(const Duration(seconds: 4));
+
+      // Also forward to local ESP if known
+      if (_localEspIp.isNotEmpty && _localEspIp != '192.168.4.1') {
+        try {
+          final localUri = Uri.parse(
+              'http://$_localEspIp/api/weather?cloudy=${w.isCloudy ? 1 : 0}');
+          await http.get(localUri).timeout(const Duration(seconds: 1));
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 
@@ -225,10 +336,11 @@ class FirebaseService extends ChangeNotifier {
       final wasConnected = _isCloudConnected || _isNodeMcuAlive;
       _isCloudConnected = false;
       _isNodeMcuAlive = false;
-      if (wasConnected) {
+      if (wasConnected && !_hasNotifiedDisconnected) {
+        _hasNotifiedDisconnected = true;
         final isBn = LocalizationService.instance.isBengali;
         ToastService.instance.error(
-          isBn ? 'ক্লাউড সংযোগ বিচ্ছিন্ন হয়েছে' : 'Cloud connection lost',
+          isBn ? 'সংযোগ বিচ্ছিন্ন হয়েছে (অফলাইন মোড)' : 'Connection lost (Offline mode)',
         );
       }
     }
