@@ -1,6 +1,48 @@
 {
   "rules": {
-    ".read": true,
-    ".write": true
+    "smartChargers": {
+      "$deviceId": {
+        ".read": true,
+        ".write": "auth != null || !data.exists() || data.child('info/deviceId').val() == $deviceId || $deviceId.length > 0",
+        "info": {
+          ".validate": "newData.hasChildren(['deviceId'])"
+        },
+        "state": {
+          ".read": true,
+          ".write": true
+        },
+        "commands": {
+          ".read": true,
+          ".write": true
+        },
+        "sessions": {
+          ".read": true,
+          ".write": true
+        },
+        "settings": {
+          ".read": true,
+          ".write": true
+        },
+        "config": {
+          ".read": true,
+          ".write": true
+        },
+        "billing": {
+          ".read": true,
+          ".write": true
+        },
+        "dailyBills": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
+    "devices": {
+      "$deviceId": {
+        ".read": true,
+        ".write": "auth != null || !data.exists() || data.child('info/deviceId').val() == $deviceId || $deviceId.length > 0"
+      }
+    }
   }
 }
+

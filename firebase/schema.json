@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SmartChargerDeviceSchema",
+  "type": "object",
+  "properties": {
+    "info": {
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string" },
+        "deviceName": { "type": "string" },
+        "firmwareVersion": { "type": "string" },
+        "hardwareRev": { "type": "string" },
+        "ip": { "type": "string" },
+        "mac": { "type": "string" },
+        "lastSeen": { "type": "integer" },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "currentSensor": { "type": "boolean" },
+            "powerMeasurement": { "type": "string", "enum": ["ESTIMATED", "MEASURED"] },
+            "voltageSensor": { "type": "boolean" }
+          }
+        }
+      },
+      "required": ["deviceId", "lastSeen"]
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "relayState": { "type": "boolean" },
+        "mode": { "type": "string", "enum": ["AUTO", "MANUAL", "SCHEDULE", "WEATHER", "FAULT"] },
+        "batteryVoltage": { "type": "number" },
+        "isSensorDisconnected": { "type": "boolean" },
+        "connectionType": { "type": "string", "enum": ["LOCAL", "CLOUD", "OFFLINE", "AP_MODE"] },
+        "wifiRssi": { "type": "integer" },
+        "uptimeSecs": { "type": "integer" },
+        "heartbeatSeq": { "type": "integer" },
+        "manualLockRemainingSecs": { "type": "integer" },
+        "timerActive": { "type": "boolean" },
+        "timerRemainingSecs": { "type": "integer" },
+        "sessionChargingSecs": { "type": "integer" },
+        "lastUpdated": { "type": "integer" }
+      },
+      "required": ["relayState", "mode", "batteryVoltage"]
+    },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "lowCutVoltage": { "type": "number" },
+        "highCutVoltage": { "type": "number" },
+        "hysteresisVoltage": { "type": "number" },
+        "voltageCalibration": { "type": "number" },
+        "chargerWatt": { "type": "number" },
+        "chargerAmps": { "type": "number" },
+        "electricityRateBdt": { "type": "number" },
+        "scheduleEnabled": { "type": "boolean" },
+        "chargeStartHour": { "type": "integer" },
+        "chargeStopHour": { "type": "integer" },
+        "solarBackupEnabled": { "type": "boolean" },
+        "settingsRevision": { "type": "integer" },
+        "updatedAt": { "type": "integer" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["lowCutVoltage", "highCutVoltage", "chargerWatt", "electricityRateBdt"]
+    },
+    "billing": {
+      "type": "object",
+      "properties": {
+        "powerSource": { "type": "string" },
+        "ratePerKwhBdt": { "type": "number" },
+        "todayEstimatedKwh": { "type": "number" },
+        "todayEstimatedBdt": { "type": "number" },
+        "monthEstimatedKwh": { "type": "number" },
+        "monthEstimatedBdt": { "type": "number" },
+        "disclaimer": { "type": "string" }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "properties": {
+        "todayChargingSecs": { "type": "integer" },
+        "totalChargingSecs": { "type": "integer" },
+        "weatherChargingSecs": { "type": "integer" },
+        "scheduledChargingSecs": { "type": "integer" },
+        "manualChargingSecs": { "type": "integer" },
+        "lastSavedDay": { "type": "integer" }
+      }
+    },
+    "faults": {
+      "type": "object",
+      "properties": {
+        "hasFault": { "type": "boolean" },
+        "sensorAbnormal": { "type": "boolean" },
+        "overVoltageTriggered": { "type": "boolean" },
+        "relayChatterDetected": { "type": "boolean" },
+        "lastFaultReason": { "type": "string" },
+        "lastFaultTimestamp": { "type": "integer" }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "value": { "type": ["string", "boolean", "number", "null"] },
+          "source": { "type": "string" },
+          "createdAt": { "type": "integer" },
+          "status": { "type": "string", "enum": ["PENDING", "RECEIVED", "EXECUTED", "FAILED"] },
+          "executedAt": { "type": "integer" }
+        },
+        "required": ["type", "status", "createdAt"]
+      }
+    }
+  }
+}

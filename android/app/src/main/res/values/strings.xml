@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">VoltPulse Smart Charger</string>
+    <string name="dashboard">Dashboard</string>
+    <string name="control">Control</string>
+    <string name="schedule">Schedule</string>
+    <string name="billing">Billing</string>
+    <string name="settings">Settings</string>
+    <string name="diagnostics">Diagnostics</string>
+</resources>

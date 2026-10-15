@@ -19,3 +19,23 @@ ui-debug.log
 *.iml
 .DS_Store
 Thumbs.db
+
+# Firmware binaries & tools
+firmware/arduino-cli.exe
+firmware/arduino-cli.zip
+firmware/wifi_charger_esp8266/build/
+*.elf
+*.map
+
+# Android build artifacts
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/build_output.txt
+
+# Python
+__pycache__/
+*.pyc
+
