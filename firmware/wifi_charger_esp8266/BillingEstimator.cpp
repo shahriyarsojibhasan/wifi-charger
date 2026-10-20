@@ -2,6 +2,7 @@
 #include "ConfigManager.h"
 #include "RelayController.h"
 #include "TimeManager.h"
+#include "FirebaseManager.h"
 #include <LittleFS.h>
 #include <time.h>
 
@@ -121,9 +122,11 @@ void BillingEstimator::checkDayRollOver() {
   struct tm tmInfo;
   if (timeMgr.getLocalTime(&tmInfo)) {
     if (_lastSavedDay != 0 && _lastSavedDay != tmInfo.tm_mday) {
-      // Midnight crossed: record yesterday's bill to 30-day rolling history
+      // Midnight crossed: accurately calculate yesterday's timestamp
       uint32_t currentEpoch = timeMgr.getEpoch();
-      uint32_t yesterdayEpoch = (currentEpoch > 86400) ? (currentEpoch - 3600) : 0;
+      uint32_t secsToday = tmInfo.tm_hour * 3600 + tmInfo.tm_min * 60 + tmInfo.tm_sec;
+      uint32_t yesterdayEpoch = (currentEpoch > (secsToday + 43200)) ? (currentEpoch - secsToday - 43200) : ((currentEpoch > 86400) ? currentEpoch - 86400 : 0);
+
       recordDailyBill(
         yesterdayEpoch,
         _todaySeconds,
@@ -137,7 +140,8 @@ void BillingEstimator::checkDayRollOver() {
 
       // Reset today accumulator
       _todaySeconds = 0;
-      Serial.println(F("[Billing] Midnight roll-over detected. Recorded yesterday's bill to 30-day history and reset today timer."));
+      Serial.println(F("[Billing] Midnight roll-over detected. Recorded yesterday's bill to history and reset today timer."));
+      firebaseMgr.triggerFullSync(); // Push new daily bill to Firebase Realtime Database
     }
     _lastSavedDay = tmInfo.tm_mday;
   }
@@ -154,17 +158,17 @@ void BillingEstimator::recordDailyBill(uint32_t dateEpoch, uint32_t seconds, flo
   rec.manualCostBdt = mCost;
   rec.solarCostBdt = solCost;
 
-  if (_dailyBillCount < 30) {
+  if (_dailyBillCount < 14) {
     _dailyBills[_dailyBillCount++] = rec;
   } else {
-    // Strictly max 30 days: shift oldest day out to prevent memory/storage growth
-    for (int i = 0; i < 29; i++) {
+    // Keep max 14 days locally in flash to protect LittleFS from filling up
+    for (int i = 0; i < 13; i++) {
       _dailyBills[i] = _dailyBills[i + 1];
     }
-    _dailyBills[29] = rec;
+    _dailyBills[13] = rec;
   }
   saveSessionsToStorage();
-  Serial.printf("[Billing] 30-Day History updated (count=%d). Stored: %.4f kWh, %.2f BDT\n",
+  Serial.printf("[Billing] Daily History updated (count=%d). Stored: %.4f kWh, %.2f BDT\n",
                 _dailyBillCount, kwh, cost);
 }
 
@@ -259,7 +263,8 @@ void BillingEstimator::tickOneSecond(bool isCharging, float currentVoltage, cons
     else _autoSeconds++;
 
     static unsigned long lastMetricsSave = 0;
-    if (millis() - lastMetricsSave >= 60000UL) {
+    // Periodic safety backup every 30 minutes (RAM holds active counters, saved on endSession)
+    if (millis() - lastMetricsSave >= 1800000UL) {
       lastMetricsSave = millis();
       saveSessionsToStorage();
     }
@@ -272,8 +277,58 @@ void BillingEstimator::tickOneSecond(bool isCharging, float currentVoltage, cons
 
 void BillingEstimator::acknowledgeSessions() {
   _sessionCount = 0;
-  LittleFS.remove("/sessions.dat");
+  saveSessionsToStorage();
   Serial.println(F("[Billing] Acknowledged and cleared offline session buffer."));
+}
+
+uint8_t BillingEstimator::getUnsyncedSessionCount() const {
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < _sessionCount; i++) {
+    if (!_sessions[i].isSynced) count++;
+  }
+  return count;
+}
+
+bool BillingEstimator::markSessionSynced(const char* sessionId) {
+  for (uint8_t i = 0; i < _sessionCount; i++) {
+    if (strcmp(_sessions[i].sessionId, sessionId) == 0) {
+      _sessions[i].isSynced = true;
+      saveSessionsToStorage();
+      return true;
+    }
+  }
+  return false;
+}
+
+void BillingEstimator::pruneSyncedSessions() {
+  uint8_t newCount = 0;
+  for (uint8_t i = 0; i < _sessionCount; i++) {
+    if (!_sessions[i].isSynced) {
+      if (newCount != i) {
+        _sessions[newCount] = _sessions[i];
+      }
+      newCount++;
+    }
+  }
+  if (newCount != _sessionCount) {
+    uint8_t removed = _sessionCount - newCount;
+    _sessionCount = newCount;
+    saveSessionsToStorage();
+    Serial.printf("[Billing] Pruned %d synced sessions from flash storage. Remaining unsynced: %d\n",
+                  removed, _sessionCount);
+  }
+}
+
+void BillingEstimator::pruneOldDailyBills(uint8_t keepDays) {
+  if (_dailyBillCount <= keepDays) return;
+  uint8_t toRemove = _dailyBillCount - keepDays;
+  for (uint8_t i = 0; i < keepDays; i++) {
+    _dailyBills[i] = _dailyBills[i + toRemove];
+  }
+  _dailyBillCount = keepDays;
+  saveSessionsToStorage();
+  Serial.printf("[Billing] Pruned %d old daily bills from flash storage (retained %d days).\n",
+                toRemove, keepDays);
 }
 
 void BillingEstimator::resetEnergyStats() {
@@ -335,7 +390,7 @@ String BillingEstimator::getOfflineSessionsJson() const {
 }
 
 void BillingEstimator::saveSessionsToStorage() {
-  File f = LittleFS.open("/sessions.dat", "w");
+  File f = LittleFS.open("/sessions.tmp", "w");
   if (!f) return;
   f.write((uint8_t*)&_sessionCount, sizeof(_sessionCount));
   f.write((uint8_t*)&_todaySeconds, sizeof(_todaySeconds));
@@ -353,7 +408,14 @@ void BillingEstimator::saveSessionsToStorage() {
   if (_dailyBillCount > 0) {
     f.write((uint8_t*)_dailyBills, sizeof(DailyBillRecord) * _dailyBillCount);
   }
+  f.flush();
   f.close();
+
+  // Atomic file replacement to prevent power-cut corruption
+  if (LittleFS.exists("/sessions.dat")) {
+    LittleFS.remove("/sessions.dat");
+  }
+  LittleFS.rename("/sessions.tmp", "/sessions.dat");
 }
 
 void BillingEstimator::loadSessionsFromStorage() {
@@ -389,6 +451,6 @@ void BillingEstimator::loadSessionsFromStorage() {
     }
   }
   f.close();
-  Serial.printf("[Billing] Loaded persistent metrics. Today: %lu s, Total: %lu s, Offline Sessions: %d, 30-Day Bills: %d\n",
+  Serial.printf("[Billing] Loaded persistent metrics. Today: %lu s, Total: %lu s, Offline Sessions: %d, Daily Bills: %d\n",
                 (unsigned long)_todaySeconds, (unsigned long)_totalSeconds, _sessionCount, _dailyBillCount);
 }

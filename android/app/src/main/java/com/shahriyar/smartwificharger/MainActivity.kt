@@ -721,6 +721,7 @@ fun MainAppScaffold(viewModel: ChargerViewModel) {
                 Screen.Devices -> DevicesScreen(
                     state = state,
                     onDiscoverLocal = { viewModel.discoverLocalEsp() },
+                    onSwitchDevice = { viewModel.switchDevice(it) },
                     modifier = modifier
                 )
                 Screen.Automation -> AutomationScreen(

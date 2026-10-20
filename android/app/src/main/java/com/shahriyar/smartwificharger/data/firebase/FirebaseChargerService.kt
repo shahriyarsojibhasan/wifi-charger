@@ -50,6 +50,31 @@ class FirebaseChargerService(
         data
     }
 
+    suspend fun getAvailableDeviceIds(): List<String> = withContext(Dispatchers.IO) {
+        val list = mutableListOf<String>()
+        try {
+            val url = "$databaseUrl/smartChargers.json?shallow=true"
+            val req = Request.Builder().url(url).build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: ""
+                    if (body.startsWith("{")) {
+                        val obj = JsonParser.parseString(body).asJsonObject
+                        for (k in obj.keySet()) {
+                            if (k.isNotBlank() && !list.contains(k)) {
+                                list.add(k)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        if (!list.contains(deviceId) && deviceId.isNotBlank()) {
+            list.add(deviceId)
+        }
+        list
+    }
+
     private fun executeGet(url: String): StatusResponse? {
         return try {
             val request = Request.Builder().url(url).build()
@@ -362,27 +387,49 @@ class FirebaseChargerService(
                 wifiRssi = telemetry?.wifiRssi ?: -70
             )
 
-            val dailyBills = if (root.has("dailyBills") && root.get("dailyBills").isJsonArray) {
+            val dailyBills = if (root.has("dailyBills")) {
                 try {
-                    val arr = root.getAsJsonArray("dailyBills")
+                    val elem = root.get("dailyBills")
                     val list = mutableListOf<com.shahriyar.smartwificharger.data.api.DailyBillDto>()
-                    for (item in arr) {
-                        if (item.isJsonObject) {
-                            val obj = item.asJsonObject
-                            list.add(
-                                com.shahriyar.smartwificharger.data.api.DailyBillDto(
-                                    dateEpoch = obj.get("dateEpoch")?.asLong ?: 0L,
-                                    chargingSeconds = obj.get("chargingSeconds")?.asLong ?: 0L,
-                                    kwh = obj.get("kwh")?.asFloat ?: 0f,
-                                    costBdt = obj.get("costBdt")?.asFloat ?: 0f,
-                                    autoCost = obj.get("autoCost")?.asFloat ?: 0f,
-                                    scheduleCost = obj.get("scheduleCost")?.asFloat ?: 0f,
-                                    manualCost = obj.get("manualCost")?.asFloat ?: 0f,
-                                    solarCost = obj.get("solarCost")?.asFloat ?: 0f
+                    if (elem.isJsonArray) {
+                        for (item in elem.asJsonArray) {
+                            if (item.isJsonObject) {
+                                val obj = item.asJsonObject
+                                list.add(
+                                    com.shahriyar.smartwificharger.data.api.DailyBillDto(
+                                        dateEpoch = obj.get("dateEpoch")?.asLong ?: 0L,
+                                        chargingSeconds = obj.get("chargingSeconds")?.asLong ?: 0L,
+                                        kwh = obj.get("kwh")?.asFloat ?: 0f,
+                                        costBdt = obj.get("costBdt")?.asFloat ?: 0f,
+                                        autoCost = obj.get("autoCost")?.asFloat ?: 0f,
+                                        scheduleCost = obj.get("scheduleCost")?.asFloat ?: 0f,
+                                        manualCost = obj.get("manualCost")?.asFloat ?: 0f,
+                                        solarCost = obj.get("solarCost")?.asFloat ?: 0f
+                                    )
                                 )
-                            )
+                            }
+                        }
+                    } else if (elem.isJsonObject) {
+                        for (entry in elem.asJsonObject.entrySet()) {
+                            val item = entry.value
+                            if (item.isJsonObject) {
+                                val obj = item.asJsonObject
+                                list.add(
+                                    com.shahriyar.smartwificharger.data.api.DailyBillDto(
+                                        dateEpoch = obj.get("dateEpoch")?.asLong ?: entry.key.toLongOrNull() ?: 0L,
+                                        chargingSeconds = obj.get("chargingSeconds")?.asLong ?: 0L,
+                                        kwh = obj.get("kwh")?.asFloat ?: 0f,
+                                        costBdt = obj.get("costBdt")?.asFloat ?: 0f,
+                                        autoCost = obj.get("autoCost")?.asFloat ?: 0f,
+                                        scheduleCost = obj.get("scheduleCost")?.asFloat ?: 0f,
+                                        manualCost = obj.get("manualCost")?.asFloat ?: 0f,
+                                        solarCost = obj.get("solarCost")?.asFloat ?: 0f
+                                    )
+                                )
+                            }
                         }
                     }
+                    list.sortBy { it.dateEpoch ?: 0L }
                     list
                 } catch (_: Exception) { null }
             } else null

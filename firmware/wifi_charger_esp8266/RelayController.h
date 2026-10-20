@@ -19,7 +19,7 @@ public:
   // Manual Lock (5 minutes)
   bool isManualLocked() const;
   unsigned long getManualLockRemainingSecs() const;
-  void clearManualLock() { _manualLockUntil = 0; }
+  void clearManualLock() { _manualLockDurationMs = 0; }
   void reapplyHardware();
 
   // Electrical Diagnostic
@@ -30,7 +30,8 @@ public:
 private:
   bool _isOn;
   unsigned long _lastToggleTime;
-  unsigned long _manualLockUntil;
+  unsigned long _manualLockStartTime;
+  unsigned long _manualLockDurationMs;
   bool _chatterFault;
 
   // Anti-chatter sliding window (track last 6 toggle timestamps)

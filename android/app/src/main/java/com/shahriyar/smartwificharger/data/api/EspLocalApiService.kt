@@ -378,6 +378,15 @@ object EspApiClientFactory {
         clientCache.clear()
     }
 
+    /**
+     * Removes all cached clients that were bound to a specific network object.
+     * Call this whenever the active Wi-Fi network changes (onAvailable / onLost).
+     */
+    fun clearCacheForNetwork(network: android.net.Network?) {
+        val netHash = "${network?.hashCode() ?: 0}"
+        clientCache.keys.removeAll { it.contains("|net=$netHash") }
+    }
+
     fun create(
         baseUrl: String,
         socketFactory: javax.net.SocketFactory? = null,
@@ -387,8 +396,8 @@ object EspApiClientFactory {
         val cacheKey = "$cleanUrl|net=${network?.hashCode() ?: 0}"
         return clientCache.getOrPut(cacheKey) {
             val clientBuilder = OkHttpClient.Builder()
-                .connectTimeout(2000, TimeUnit.MILLISECONDS)
-                .readTimeout(10000, TimeUnit.MILLISECONDS)
+                .connectTimeout(3000, TimeUnit.MILLISECONDS)
+                .readTimeout(20000, TimeUnit.MILLISECONDS) // 20s: async scan may take up to 12s
                 .writeTimeout(10000, TimeUnit.MILLISECONDS)
                 .retryOnConnectionFailure(true)
 

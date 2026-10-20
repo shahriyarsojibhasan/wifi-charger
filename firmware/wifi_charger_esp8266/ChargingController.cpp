@@ -21,6 +21,7 @@ ChargingController::ChargingController()
     _timerActive(false),
     _timerRemainingSeconds(0),
     _lastTimerPersistSec(0),
+    _lastTimerExpiredTime(0),
     _scheduleSessionActive(false),
     _scheduleCompensating(false),
     _scheduleCompletedForWindow(false),
@@ -133,6 +134,7 @@ void ChargingController::setWeatherCloudySignal(bool isCloudy) {
 
 void ChargingController::setTimer(uint32_t minutes) {
   _timerActive = true;
+  _lastTimerExpiredTime = 0;
   _timerRemainingSeconds = minutes * 60;
   _lastTimerPersistSec = _timerRemainingSeconds;
   saveTimerState();
@@ -145,6 +147,7 @@ void ChargingController::cancelTimer() {
   _timerActive = false;
   _timerRemainingSeconds = 0;
   _lastTimerPersistSec = 0;
+  _lastTimerExpiredTime = millis();
   clearTimerState();
   relayCtrl.forceOff("TIMER_CANCELLED");
 }
@@ -168,6 +171,7 @@ bool ChargingController::requestRelay(bool turnOn, const char* source, String& o
   bool ok = relayCtrl.setRelay(turnOn, true, source, outRejectReason);
   if (ok) {
     if (turnOn) {
+      _lastTimerExpiredTime = 0;
       _manualChargingActive = true;
       relayCtrl.startDiagnostic(voltageSensor.getLastVoltage());
       transitionTo(STATE_MANUAL, "Manual Charging Started (Protected until full >=95% or manual OFF)");
@@ -206,17 +210,18 @@ void ChargingController::tick() {
   if (_timerActive && relayCtrl.isOn()) {
     if (_timerRemainingSeconds > 0) {
       _timerRemainingSeconds--;
-      // Persist to LittleFS every 10 seconds so electricity cut won't lose progress!
-      if (_lastTimerPersistSec == 0 || (_lastTimerPersistSec - _timerRemainingSeconds >= 10)) {
+      // Persist to LittleFS every 300 seconds (5 mins) to prevent flash wearout while surviving power loss
+      if (_lastTimerPersistSec == 0 || (_lastTimerPersistSec - _timerRemainingSeconds >= 300)) {
         _lastTimerPersistSec = _timerRemainingSeconds;
         saveTimerState();
       }
     } else {
       _timerActive = false;
       _lastTimerPersistSec = 0;
+      _lastTimerExpiredTime = millis();
       clearTimerState();
       relayCtrl.forceOff("TIMER_EXPIRED");
-      Serial.println(F("[ChargingCtrl] Countdown timer reached 0 -> Relay OFF"));
+      Serial.println(F("[ChargingCtrl] Countdown timer reached 0 -> Relay OFF (Cooldown armed)"));
     }
   }
 
@@ -225,8 +230,8 @@ void ChargingController::tick() {
     if (_scheduleRemainingSeconds > 0) {
       _scheduleRemainingSeconds--;
       _dailyScheduleChargedSecs++;
-      // Persist to LittleFS every 10 seconds so electricity cut won't lose remaining duration!
-      if (_lastSchedulePersistSec == 0 || (_lastSchedulePersistSec - _scheduleRemainingSeconds >= 10)) {
+      // Persist to LittleFS every 300 seconds (5 mins) to prevent flash wearout while surviving power loss
+      if (_lastSchedulePersistSec == 0 || (_lastSchedulePersistSec - _scheduleRemainingSeconds >= 300)) {
         _lastSchedulePersistSec = _scheduleRemainingSeconds;
         saveScheduleState();
       }
@@ -499,6 +504,8 @@ void ChargingController::evaluateStateMachine() {
         if (_scheduleSessionActive) {
           _scheduleSessionActive = false;
           _scheduleRemainingSeconds = 0;
+          _dailyScheduleCompleted = true;
+          _lastDailyScheduleDate = scheduleCtrl.getTodayDateCode();
           clearScheduleState();
         }
         if (isRelayOn) {
@@ -536,16 +543,18 @@ void ChargingController::evaluateStateMachine() {
   }
 
   // ── RULE 9: LOW BATTERY AUTO-CHARGE TRIGGER (AUTO MODE) ──
-  // Triggers auto-charge when battery touches low-cut or is within 0.10V of low-cut!
-  if (cfg.autoMode && !_autoChargingActive && !_manualChargingActive && !_timerActive && !relayCtrl.isManualLocked()) {
-    float lowTrigger = cfg.lowCutVoltage + 0.10f; // Triggers when touching or near low-cut!
+  // Triggers auto-charge when battery touches lower cut or is near lower cut (within 0.20V)!
+  // If a countdown timer recently expired (< 10 minutes), hold off auto-charge so timer stays OFF!
+  bool inTimerCooldown = (_lastTimerExpiredTime != 0 && (millis() - _lastTimerExpiredTime < 600000UL));
+  if (cfg.autoMode && !_autoChargingActive && !_manualChargingActive && !_timerActive && !inTimerCooldown && !relayCtrl.isManualLocked()) {
+    float lowTrigger = cfg.lowCutVoltage + 0.20f; // Triggers when touching or near lower cut!
     if (volts <= lowTrigger && volts >= minBatteryVolts && !voltageSensor.isDisconnected()) {
       _autoChargingActive = true;
       _highCutSustainCount = 0;
       saveAutoChargeState();
       relayCtrl.setRelay(true, false, "LOW_VOLTAGE_AUTO_TRIGGER", rejectErr);
-      transitionTo(STATE_CHARGING, "Low Battery Auto-Charge Started (Latched until High Cut)");
-      Serial.printf("[ChargingCtrl] Low-cut triggered (%.2fV <= %.2fV). Auto-charging latched ON until high-cut (%.2fV).\n",
+      transitionTo(STATE_CHARGING, "Low Battery Auto-Charge Started (Latched until Full High Cut)");
+      Serial.printf("[ChargingCtrl] Near lower-cut triggered (%.2fV <= %.2fV). Auto-charging latched ON until full high-cut (%.2fV).\n",
                     volts, lowTrigger, cfg.highCutVoltage);
       return;
     }
@@ -568,15 +577,15 @@ void ChargingController::evaluateStateMachine() {
     if (isRelayOn) {
       transitionTo(STATE_CHARGING, "Auto Charging In Progress");
     } else {
-      // Hysteresis check before re-enabling
-      if (!voltageSensor.isDisconnected() && volts >= minBatteryVolts &&
-          volts < (cfg.highCutVoltage - cfg.hysteresisVoltage) && volts <= (cfg.lowCutVoltage + 0.3f)) {
+      // Hysteresis check before re-enabling: only restart when discharged near lower cut
+      if (!inTimerCooldown && !voltageSensor.isDisconnected() && volts >= minBatteryVolts &&
+          volts < (cfg.highCutVoltage - cfg.hysteresisVoltage) && volts <= (cfg.lowCutVoltage + 0.20f)) {
         _autoChargingActive = true;
         _highCutSustainCount = 0;
         saveAutoChargeState();
         relayCtrl.setRelay(true, false, "AUTO_THRESHOLD_RESTART", rejectErr);
         if (relayCtrl.isOn()) {
-          transitionTo(STATE_CHARGING, "Auto Charging Started");
+          transitionTo(STATE_CHARGING, "Auto Charging Started (Latched until Full)");
           return;
         }
       }
@@ -807,6 +816,25 @@ uint32_t ChargingController::getScheduleDateCode() const {
   return scheduleCtrl.getTodayDateCode();
 }
 
+bool ChargingController::isDailyScheduleCompleted() const {
+  const DeviceConfig& cfg = configMgr.get();
+  if (!cfg.scheduleEnabled) return false;
+
+  struct tm tmInfo;
+  bool hasTime = timeMgr.getLocalTime(&tmInfo);
+  if (hasTime && !scheduleCtrl.isDayScheduled(tmInfo.tm_wday)) {
+    return false;
+  }
+
+  if (_dailyScheduleCompleted) {
+    return true;
+  }
+  if (hasTime && scheduleCtrl.isPastScheduleStartTimeNow() && !scheduleCtrl.isScheduleActiveNow()) {
+    return true;
+  }
+  return false;
+}
+
 const char* ChargingController::getDailyScheduleStatus() const {
   const DeviceConfig& cfg = configMgr.get();
   if (!cfg.scheduleEnabled) return "DISABLED";
@@ -817,7 +845,7 @@ const char* ChargingController::getDailyScheduleStatus() const {
     return "NOT_SCHEDULED_TODAY";
   }
 
-  if (_dailyScheduleCompleted) {
+  if (isDailyScheduleCompleted()) {
     return "COMPLETED";
   }
   if (_scheduleCompensating && _scheduleSessionActive) {

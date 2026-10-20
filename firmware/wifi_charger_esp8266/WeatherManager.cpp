@@ -137,7 +137,8 @@ void WeatherManager::fetchWeather(bool force) {
   WiFiClient client;
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(1000); // 1.0s max to avoid any hang
+  http.setTimeout(2500); // 2.5s safe timeout for reliable weather fetching
+  http.setReuse(false);
   
   if (http.begin(client, url)) {
     yield();

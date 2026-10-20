@@ -106,3 +106,48 @@ float StorageManager::getUsagePercent() const {
   if (total == 0) return 0.0f;
   return ((float)getUsedBytes() / (float)total) * 100.0f;
 }
+
+bool StorageManager::safeWriteAtomic(const char* path, const String& content) {
+  if (!_mounted) return false;
+  String tmpPath = String(path) + ".tmp";
+  File f = LittleFS.open(tmpPath.c_str(), "w");
+  if (!f) return false;
+  size_t bytes = f.print(content);
+  f.flush();
+  f.close();
+  if (bytes != content.length()) {
+    LittleFS.remove(tmpPath.c_str());
+    return false;
+  }
+  if (LittleFS.exists(path)) {
+    LittleFS.remove(path);
+  }
+  return LittleFS.rename(tmpPath.c_str(), path);
+}
+
+void StorageManager::ensureStorageHealth() {
+  if (!_mounted) return;
+  FSInfo info;
+  if (!LittleFS.info(info)) return;
+
+  float usage = (info.totalBytes > 0) ? ((float)info.usedBytes / (float)info.totalBytes * 100.0f) : 0.0f;
+  size_t freeBytes = (info.totalBytes > info.usedBytes) ? (info.totalBytes - info.usedBytes) : 0;
+
+  // Clean orphaned scratch and temp files if storage exceeds 75% or free space drops below 64KB
+  if (usage > 75.0f || freeBytes < 65536) {
+    Serial.printf("[StorageMgr] Storage alert: Used %u KB (%.1f%%), Free %u KB. Cleaning temp files...\n",
+                  (unsigned int)(info.usedBytes / 1024), usage, (unsigned int)(freeBytes / 1024));
+
+    const char* scratchFiles[] = {
+      "/config.tmp.json",
+      "/sessions.tmp",
+      "/timer.tmp",
+      "/sched.tmp"
+    };
+    for (size_t i = 0; i < sizeof(scratchFiles)/sizeof(scratchFiles[0]); i++) {
+      if (LittleFS.exists(scratchFiles[i])) {
+        LittleFS.remove(scratchFiles[i]);
+      }
+    }
+  }
+}

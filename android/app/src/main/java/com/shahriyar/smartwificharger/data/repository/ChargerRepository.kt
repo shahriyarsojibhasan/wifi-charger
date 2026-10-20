@@ -504,7 +504,7 @@ class ChargerRepository(
                     scheduleEnabled = resolvedSchedule,
                     autoModeEnabled = resolvedAutoMode,
                     solarBackupEnabled = resolvedSolarBackup,
-                    apSsid = c.apSsid ?: "SMART CHARGE CONTROLLER",
+                    apSsid = c.apSsid ?: "SMART-CHARGER-CONTROLLER",
                     deviceName = c.deviceName ?: "Smart Charger",
                     deviceId = c.deviceId ?: deviceId,
                     weatherLat = c.weatherLat ?: cachedConfig.weatherLat,
@@ -512,6 +512,15 @@ class ChargerRepository(
                     weatherSyncEnabled = resolvedWeatherSync,
                     updatedAt = if (incomingSec > 0L) incomingSec else currentSec
                 )
+                // Auto-detect and sync Device ID if reported by hardware/cloud
+                val detectedId = (c.deviceId?.trim()?.ifBlank { null }) ?: (data.health?.deviceId?.trim()?.ifBlank { null })
+                if (!detectedId.isNullOrBlank() && detectedId != deviceId) {
+                    deviceId = detectedId
+                    prefs.deviceId = detectedId
+                    connectionManager.updateConfig(localBaseUrl, firebaseDbUrl, detectedId)
+                    firebaseService.updateConfig(firebaseDbUrl, detectedId)
+                    syncEngine.updateDeviceId(detectedId)
+                }
                 // Persist synchronized configuration into AppPreferences so app restarts never revert
                 try {
                     prefs.batteryProfile = cachedConfig.batteryProfile
@@ -879,15 +888,11 @@ class ChargerRepository(
 
     suspend fun setTimer(minutes: Int): DeviceCommandResult = withContext(Dispatchers.IO) {
         var res = deviceTransport.sendTimerMinutes(minutes)
-        if (!res.success && deviceTransport.mode == ConnectionMode.LOCAL_LAN) {
+        if (!res.success && deviceTransport.mode != ConnectionMode.DIRECT_AP) {
             val fbRes = connectionManager.firebaseWanTransport.sendTimerMinutes(minutes)
             if (fbRes.success) {
                 res = fbRes
             }
-        } else {
-            try {
-                connectionManager.firebaseWanTransport.sendTimerMinutes(minutes)
-            } catch (_: Exception) {}
         }
         if (res.success) {
             cachedTelemetry = cachedTelemetry.copy(
@@ -903,12 +908,40 @@ class ChargerRepository(
         deviceTransport.triggerRelayDiagnostic()
     }
 
-    suspend fun scanWifi(): List<com.shahriyar.smartwificharger.data.api.WifiNetworkDto>? {
-        return connectionManager.getActiveTransport().scanWifi()
+    suspend fun scanWifi(): List<com.shahriyar.smartwificharger.data.api.WifiNetworkDto>? = withContext(Dispatchers.IO) {
+        // 1. Try active transport
+        val activeRes = connectionManager.getActiveTransport().scanWifi()
+        if (!activeRes.isNullOrEmpty()) return@withContext activeRes
+
+        // 2. Fallback: Directly attempt Direct AP transport (192.168.4.1)
+        val apRes = connectionManager.directApTransport.scanWifi()
+        if (!apRes.isNullOrEmpty()) return@withContext apRes
+
+        // 3. Fallback: Directly attempt Local LAN transport
+        val lanRes = connectionManager.localLanTransport.scanWifi()
+        if (!lanRes.isNullOrEmpty()) return@withContext lanRes
+
+        activeRes ?: apRes ?: lanRes
     }
 
-    suspend fun saveWifi(ssid: String, pass: String): DeviceCommandResult {
-        return connectionManager.getActiveTransport().saveWifi(ssid, pass)
+    suspend fun saveWifi(ssid: String, pass: String): DeviceCommandResult = withContext(Dispatchers.IO) {
+        // 1. If currently in Direct AP, execute directly
+        if (connectionManager.connectionState.value == ConnectionMode.DIRECT_AP) {
+            return@withContext connectionManager.directApTransport.saveWifi(ssid, pass)
+        }
+        // 2. Fallback: Always try Direct AP first when saving credentials because phone connects to AP
+        val apRes = connectionManager.directApTransport.saveWifi(ssid, pass)
+        if (apRes.success) return@withContext apRes
+
+        // 3. Fallback: Try Local LAN
+        val lanRes = connectionManager.localLanTransport.saveWifi(ssid, pass)
+        if (lanRes.success) return@withContext lanRes
+
+        apRes
+    }
+
+    suspend fun getAvailableDevices(): List<String> = withContext(Dispatchers.IO) {
+        firebaseService.getAvailableDeviceIds()
     }
 
 

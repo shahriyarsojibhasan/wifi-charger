@@ -45,7 +45,7 @@ String TelemetryManager::getTelemetryJson() const {
   s += "\"battery_voltage\":"    + String(volts, 2) + ",";
   s += "\"relay_state\":"        + String(relayOn ? "true" : "false") + ",";
   s += "\"charging_mode\":\""    + String(chargingCtrl.getStateString()) + "\",";
-  s += "\"sensor_status\":\""    + String(voltageSensor.isDisconnected() ? "ERROR" : (voltageSensor.isOverVoltage() ? "WARNING" : "OK")) + ",";
+  s += "\"sensor_status\":\""    + String(voltageSensor.isDisconnected() ? "ERROR" : (voltageSensor.isOverVoltage() ? "WARNING" : "OK")) + "\",";
   s += "\"relay_diagnostic\":\"" + String(relayCtrl.getDiagnosticStatus()) + "\",";
   s += "\"wifi_rssi\":"          + String(wifiMgr.getRssi()) + ",";
   s += "\"uptime_secs\":"        + String(millis() / 1000) + "}";

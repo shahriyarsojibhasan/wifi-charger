@@ -72,6 +72,7 @@ String HealthManager::getHealthJson() const {
   json += "\"ok\":" + String(getOverallStatus() != HEALTH_FAULT ? "true" : "false") + ",";
   json += "\"deviceType\":\"SMART_CHARGER\",";
   json += "\"deviceId\":\"" + String(cfg.deviceId) + "\",";
+  json += "\"device_id\":\"" + String(cfg.deviceId) + "\",";
   json += "\"name\":\"" + String(cfg.deviceName) + "\",";
   json += "\"apiVersion\":1,";
   json += "\"firmware\":\"" FIRMWARE_VERSION "\",";

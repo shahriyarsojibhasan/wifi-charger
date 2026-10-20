@@ -21,30 +21,34 @@ void APManager::begin(int channel) {
   const DeviceConfig& cfg = configMgr.get();
 
   bool isSetup = isSetupMode();
-  const char* ssid = isSetup ? SETUP_AP_SSID
-                             : ((strlen(cfg.apSsid) > 0) ? cfg.apSsid : DEFAULT_AP_SSID);
 
-  // Setup mode = OPEN hotspot (no password) for instant 1-tap connection from any phone!
-  // Fallback mode (router offline) = WPA2-PSK password protected ("12345678" or user configured)
-  const char* pass = isSetup ? nullptr
-                             : ((strlen(cfg.apPass) >= 8) ? cfg.apPass : DEFAULT_AP_PASS);
+  // Setup mode (no Wi-Fi configured) = "SMART-CHARGER-SETUP", OPEN (no password)
+  // Configured mode (router offline) = "SMART-CHARGER-CONTROLLER", WPA2 password ("12345678" or configured)
+  // Always broadcast "SMART-CHARGER-CONTROLLER" with WPA2 password ("12345678" or configured)
+  const char* ssid = DEFAULT_AP_SSID;
+  const char* pass = (strlen(cfg.apPass) >= 8) ? cfg.apPass : DEFAULT_AP_PASS;
 
   if (channel < 1 || channel > 13) channel = 1;
   _channel = channel;
 
-  // 1. Radio Mode: WIFI_AP_STA so SoftAP is rock solid and STA can scan nearby Wi-Fi
+  // 1. Radio Mode: WIFI_AP_STA with SDK auto-reconnect SILENCED
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(false); // CRITICAL: Stop SDK background scanning so SoftAP beacon never drops!
   delay(50);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  WiFi.setOutputPower(20.5f); // Maximum RF power (20.5 dBm) for robust signal and range
 
-  // 2. Start SoftAP cleanly
-  // ESP8266 Arduino core natively sets IP 192.168.4.1, Subnet 255.255.255.0,
-  // and starts the built-in DHCP server leasing 192.168.4.2 to 192.168.4.100.
+  // 2. Explicit SoftAP IP Configuration (CRITICAL for rock-solid Android/iOS DHCP lease!)
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress netMsk(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+
+  // 3. Start SoftAP cleanly (max 4 clients, visible SSID)
   bool ok = false;
   if (isSetup || pass == nullptr || strlen(pass) < 8) {
-    ok = WiFi.softAP(ssid);
+    ok = WiFi.softAP(ssid, nullptr, _channel, 0, 4);
   } else {
-    ok = WiFi.softAP(ssid, pass);
+    ok = WiFi.softAP(ssid, pass, _channel, 0, 4);
   }
   _apActive = ok;
 
@@ -83,10 +87,7 @@ String APManager::getApIpString() const {
 }
 
 String APManager::getApSsid() const {
-  const DeviceConfig& cfg = configMgr.get();
-  bool isSetup = (strlen(cfg.wifiSsid) == 0);
-  if (isSetup) return String(SETUP_AP_SSID);
-  return (strlen(cfg.apSsid) > 0) ? String(cfg.apSsid) : String(DEFAULT_AP_SSID);
+  return String(DEFAULT_AP_SSID);
 }
 
 void APManager::restartAp() {

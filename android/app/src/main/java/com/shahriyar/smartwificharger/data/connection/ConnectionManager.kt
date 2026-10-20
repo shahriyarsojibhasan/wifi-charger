@@ -256,6 +256,8 @@ class ConnectionManager(
 
         connectivityManager.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                // Clear stale cached API clients bound to any old network before creating new ones
+                EspApiClientFactory.clearCacheForNetwork(activeWifiNetwork)
                 activeWifiNetwork = network
                 currentNetworkId = network.toString()
                 readWifiInfo()
@@ -276,6 +278,8 @@ class ConnectionManager(
 
             override fun onLost(network: Network) {
                 if (activeWifiNetwork == network) {
+                    // Clear stale cached clients for the lost network
+                    EspApiClientFactory.clearCacheForNetwork(network)
                     activeWifiNetwork = null
                     currentNetworkId = "NONE"
                     currentSsid = "DISCONNECTED"

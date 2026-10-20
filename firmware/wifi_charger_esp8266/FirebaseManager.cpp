@@ -23,8 +23,28 @@ FirebaseManager::FirebaseManager()
     _backoffUntil(0),
     _lastSyncTime(0),
     _lastPollTime(0),
-    _lastFullSyncTime(0)
+    _lastFullSyncTime(0),
+    _lastSessionSyncTime(0),
+    _lastBillSyncTime(0),
+    _lastProcessedPayload(""),
+    _lastCmdExecuteTime(0)
 {
+}
+
+String FirebaseManager::buildUrl(const String& path) {
+  const DeviceConfig& cfg = configMgr.get();
+  String host = String(cfg.firebaseHost);
+  host.trim();
+  if (host.startsWith("https://")) host = host.substring(8);
+  if (host.startsWith("http://"))  host = host.substring(7);
+  if (host.endsWith("/"))         host = host.substring(0, host.length() - 1);
+
+  String url = "https://" + host + "/smartChargers/" + String(cfg.deviceId) + path;
+  if (strlen(cfg.firebaseAuth) > 0) {
+    url += (path.indexOf('?') != -1) ? "&auth=" : "?auth=";
+    url += String(cfg.firebaseAuth);
+  }
+  return url;
 }
 
 void FirebaseManager::begin() {
@@ -36,6 +56,10 @@ void FirebaseManager::begin() {
   _lastSyncTime = 0;
   _lastPollTime = 0;
   _lastFullSyncTime = 0;
+  _lastSessionSyncTime = 0;
+  _lastBillSyncTime = 0;
+  _lastProcessedPayload = "";
+  _lastCmdExecuteTime = 0;
   _wifiClient.setInsecure();
   _wifiClient.setBufferSizes(2048, 1536); // Pre-allocate 2048 bytes RX, 1536 bytes TX
   _wifiClient.setTimeout(4000);
@@ -118,6 +142,16 @@ void FirebaseManager::loop() {
     lastKnownVolts = curVolts;
     syncState(false);
   }
+
+  // Periodic offline sessions offload to Firebase (frees up LittleFS flash storage)
+  if (_isOnline && (now - _lastSessionSyncTime >= 15000UL) && billingEstimator.getUnsyncedSessionCount() > 0 && (now - _lastSyncTime >= 800UL)) {
+    syncOfflineSessions();
+  }
+
+  // Periodic daily bills offload to Firebase (keeps local history capped)
+  if (_isOnline && (now - _lastBillSyncTime >= 180000UL) && (now - _lastSyncTime >= 800UL)) {
+    syncDailyBills();
+  }
 }
 
 void FirebaseManager::syncState(bool forceFull) {
@@ -138,8 +172,7 @@ void FirebaseManager::syncState(bool forceFull) {
   bool relayOn = relayCtrl.isOn();
   uint32_t nowEpoch = timeMgr.getEpoch();
 
-  String basePath = "https://" + String(cfg.firebaseHost) + "/smartChargers/" + String(cfg.deviceId);
-  String url = basePath + ".json";
+  String url = buildUrl(".json");
 
   bool isFull = forceFull || _fullSyncNeeded || (_lastFullSyncTime == 0) || (millis() - _lastFullSyncTime >= 120000UL);
 
@@ -285,6 +318,8 @@ void FirebaseManager::syncState(bool forceFull) {
       if (isFull) {
         _fullSyncNeeded = false;
         _lastFullSyncTime = millis();
+        syncDailyBills();
+        syncOfflineSessions();
       }
     } else {
       _isOnline = false;
@@ -304,10 +339,11 @@ void FirebaseManager::syncState(bool forceFull) {
 }
 
 void FirebaseManager::pollCommands() {
+  _lastPollTime = millis();
   if (ESP.getFreeHeap() < 11000 || ESP.getMaxFreeBlockSize() < 5000) return;
 
   const DeviceConfig& cfg = configMgr.get();
-  String url = "https://" + String(cfg.firebaseHost) + "/smartChargers/" + String(cfg.deviceId) + "/commands.json";
+  String url = buildUrl("/commands.json");
 
   if (_httpClient.begin(_wifiClient, url)) {
     _httpClient.setTimeout(2500);
@@ -415,6 +451,14 @@ void FirebaseManager::pollCommands() {
           }
         }
 
+        // Handle immediate weather fetch / test
+        if (json.indexOf("\"test_weather\":true") != -1 || json.indexOf("\"fetch_weather\":true") != -1 ||
+            action == "FETCH_WEATHER" || action == "TEST_WEATHER") {
+          weatherMgr.fetchWeather(true);
+          triggerImmediateSync();
+          action = "PROCESSED";
+        }
+
         // Handle reset schedule
         if (json.indexOf("\"reset_schedule\":true") != -1 || json.indexOf("\"resetSchedule\":true") != -1 ||
             action == "RESET_SCHEDULE") {
@@ -440,6 +484,8 @@ void FirebaseManager::pollCommands() {
           } else {
             chargingCtrl.cancelTimer();
           }
+          triggerImmediateSync();
+          action = "PROCESSED";
         }
 
         // Handle battery profile, schedule & config update
@@ -461,14 +507,22 @@ void FirebaseManager::pollCommands() {
           }
         }
 
-        // Execute action if not already processed
-        if (action.length() > 0 && action != "PROCESSED") {
-          String msg;
-          CommandAck ack = cmdMgr.processCommand(cmdId, cfg.deviceId, action, "FIREBASE_WAN", 0, 0, json, msg);
-          Serial.printf("[Firebase] Command %s -> %s: %s (action: %s)\n",
-                        cmdId.c_str(), commandAckToString(ack), msg.c_str(), action.c_str());
-          _lastProcessedCmdId = cmdId;
-          triggerImmediateSync();
+        // Replay Protection Guard: If we already executed this exact command recently (< 15 seconds) and are just retrying the deletion, skip re-executing!
+        bool isDuplicateReplay = (json == _lastProcessedPayload && (millis() - _lastCmdExecuteTime < 15000UL));
+        if (isDuplicateReplay) {
+          Serial.println(F("[Firebase] Duplicate command detected from previous cycle (retrying DELETE)..."));
+        } else {
+          // Execute action if not already processed
+          if (action.length() > 0 && action != "PROCESSED") {
+            String msg;
+            CommandAck ack = cmdMgr.processCommand(cmdId, cfg.deviceId, action, "FIREBASE_WAN", 0, 0, json, msg);
+            Serial.printf("[Firebase] Command %s -> %s: %s (action: %s)\n",
+                          cmdId.c_str(), commandAckToString(ack), msg.c_str(), action.c_str());
+            _lastProcessedCmdId = cmdId;
+            triggerImmediateSync();
+          }
+          _lastProcessedPayload = json;
+          _lastCmdExecuteTime = millis();
         }
 
         // CRITICAL: Delete processed command from Firebase
@@ -482,6 +536,9 @@ void FirebaseManager::pollCommands() {
           _httpClient.setTimeout(2500);
           int delCode = _httpClient.sendRequest("DELETE", "");
           Serial.printf("[Firebase] Commands node cleared (code: %d)\n", delCode);
+          if (delCode == 200 || delCode == 204) {
+            _lastProcessedPayload = "";
+          }
           _httpClient.end();
         }
         _wifiClient.stop();
@@ -505,4 +562,100 @@ void FirebaseManager::pollCommands() {
   }
   _wifiClient.stop();
 }
+
+void FirebaseManager::syncOfflineSessions() {
+  if (ESP.getFreeHeap() < 9500 || ESP.getMaxFreeBlockSize() < 4000) return;
+  uint8_t unsynced = billingEstimator.getUnsyncedSessionCount();
+  if (unsynced == 0) return;
+
+  _lastSessionSyncTime = millis();
+  uint8_t total = billingEstimator.getOfflineSessionCount();
+
+  for (uint8_t i = 0; i < total; i++) {
+    OfflineSession* s = billingEstimator.getOfflineSession(i);
+    if (!s || s->isSynced) continue;
+
+    String url = buildUrl("/sessions/" + String(s->sessionId) + ".json");
+    String payload;
+    payload.reserve(320);
+    payload = "{";
+    payload += "\"sessionId\":\""       + String(s->sessionId) + "\",";
+    payload += "\"deviceId\":\""        + String(s->deviceId) + "\",";
+    payload += "\"startTime\":"         + String(s->startTime) + ",";
+    payload += "\"endTime\":"           + String(s->endTime) + ",";
+    payload += "\"durationSeconds\":"   + String(s->durationSeconds) + ",";
+    payload += "\"mode\":\""            + String(s->mode) + "\",";
+    payload += "\"averageVoltage\":"    + String(s->avgVoltage, 2) + ",";
+    payload += "\"estimatedCurrent\":"  + String(s->estimatedCurrent, 2) + ",";
+    payload += "\"estimatedEnergyKwh\":"+ String(s->estimatedKwh, 4) + ",";
+    payload += "\"estimatedCostBdt\":"  + String(s->estimatedCostBdt, 2) + ",";
+    payload += "\"syncedAt\":"          + String(timeMgr.getEpoch()) + "}";
+
+    ESP.wdtFeed();
+    yield();
+
+    if (_httpClient.begin(_wifiClient, url)) {
+      _httpClient.setTimeout(3000);
+      _httpClient.addHeader("Content-Type", "application/json");
+      int code = _httpClient.sendRequest("PUT", payload);
+      ESP.wdtFeed();
+      yield();
+      if (code == 200 || code == 204) {
+        s->isSynced = true;
+        Serial.printf("[Firebase] Session %s offloaded to cloud successfully.\n", s->sessionId);
+      }
+      _httpClient.end();
+    }
+    _wifiClient.stop();
+  }
+
+  // Prune synced sessions so LittleFS flash storage never fills up!
+  billingEstimator.pruneSyncedSessions();
+}
+
+void FirebaseManager::syncDailyBills() {
+  if (ESP.getFreeHeap() < 9500 || ESP.getMaxFreeBlockSize() < 4000) return;
+  uint8_t billCount = billingEstimator.getDailyBillCount();
+  if (billCount == 0) return;
+
+  _lastBillSyncTime = millis();
+  for (uint8_t i = 0; i < billCount; i++) {
+    const DailyBillRecord* b = billingEstimator.getDailyBill(i);
+    if (!b) continue;
+
+    String url = buildUrl("/dailyBills/" + String(b->dateEpoch) + ".json");
+    String payload;
+    payload.reserve(250);
+    payload = "{";
+    payload += "\"dateEpoch\":"       + String(b->dateEpoch) + ",";
+    payload += "\"chargingSeconds\":" + String(b->chargingSeconds) + ",";
+    payload += "\"kwh\":"             + String(b->kwh, 4) + ",";
+    payload += "\"costBdt\":"         + String(b->costBdt, 2) + ",";
+    payload += "\"autoCost\":"        + String(b->autoCostBdt, 2) + ",";
+    payload += "\"scheduleCost\":"    + String(b->scheduleCostBdt, 2) + ",";
+    payload += "\"manualCost\":"      + String(b->manualCostBdt, 2) + ",";
+    payload += "\"solarCost\":"       + String(b->solarCostBdt, 2) + ",";
+    payload += "\"syncedAt\":"        + String(timeMgr.getEpoch()) + "}";
+
+    ESP.wdtFeed();
+    yield();
+
+    if (_httpClient.begin(_wifiClient, url)) {
+      _httpClient.setTimeout(3000);
+      _httpClient.addHeader("Content-Type", "application/json");
+      int code = _httpClient.sendRequest("PUT", payload);
+      ESP.wdtFeed();
+      yield();
+      if (code == 200 || code == 204) {
+        // Daily bill synced
+      }
+      _httpClient.end();
+    }
+    _wifiClient.stop();
+  }
+
+  // Once offloaded to Firebase, keep only recent 2 days locally to prevent flash wear!
+  billingEstimator.pruneOldDailyBills(2);
+}
+
 

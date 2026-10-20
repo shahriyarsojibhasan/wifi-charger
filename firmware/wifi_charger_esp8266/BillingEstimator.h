@@ -86,17 +86,23 @@ public:
   float getSolarKwh() const;
   float getSolarCostBdt() const;
 
-  // Offline Sessions
+  // Offline Sessions & Storage Health
   uint8_t getOfflineSessionCount() const { return _sessionCount; }
+  uint8_t getUnsyncedSessionCount() const;
   const OfflineSession* getOfflineSessions() const { return _sessions; }
+  OfflineSession* getOfflineSession(uint8_t index) { return (index < _sessionCount) ? &_sessions[index] : nullptr; }
+  bool markSessionSynced(const char* sessionId);
+  void pruneSyncedSessions();
   void acknowledgeSessions();
   String getOfflineSessionsJson() const;
 
-  // 30-Day Billing History (Circular FIFO - Auto Clears older days beyond 30 days)
+  // Billing History & Storage Cap
   uint8_t getDailyBillCount() const { return _dailyBillCount; }
   const DailyBillRecord* getDailyBills() const { return _dailyBills; }
+  const DailyBillRecord* getDailyBill(uint8_t index) const { return (index < _dailyBillCount) ? &_dailyBills[index] : nullptr; }
   String getDailyBillsJson() const;
   void recordDailyBill(uint32_t dateEpoch, uint32_t seconds, float kwh, float cost, float aCost, float sCost, float mCost, float solCost);
+  void pruneOldDailyBills(uint8_t keepDays = 7);
 
   // Reset Energy & Bill Stats
   void resetEnergyStats();

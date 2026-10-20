@@ -24,6 +24,7 @@ Thumbs.db
 firmware/arduino-cli.exe
 firmware/arduino-cli.zip
 firmware/wifi_charger_esp8266/build/
+firmware/backup/
 *.elf
 *.map
 

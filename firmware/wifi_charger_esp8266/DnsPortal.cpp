@@ -21,7 +21,9 @@ void DnsPortal::begin() {
 
 void DnsPortal::loop() {
   if (_active) {
-    _dnsServer.processNextRequest();
+    for (int i = 0; i < 4; i++) {
+      _dnsServer.processNextRequest();
+    }
   }
 }
 

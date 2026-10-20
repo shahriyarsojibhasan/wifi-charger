@@ -40,7 +40,7 @@ public:
   bool isScheduleCompensating() const { return _scheduleCompensating; }
   bool isScheduleSessionActive() const { return _scheduleSessionActive; }
   uint32_t getScheduleRemainingSeconds() const { return _scheduleRemainingSeconds; }
-  bool isDailyScheduleCompleted() const { return _dailyScheduleCompleted; }
+  bool isDailyScheduleCompleted() const;
   uint32_t getDailyScheduleChargedSecs() const { return _dailyScheduleChargedSecs; }
   uint32_t getScheduleTotalSeconds() const { return _scheduleTotalSeconds; }
   uint32_t getScheduleDateCode() const;
@@ -61,6 +61,7 @@ private:
   bool _timerActive;
   uint32_t _timerRemainingSeconds;
   uint32_t _lastTimerPersistSec;
+  unsigned long _lastTimerExpiredTime;
 
   bool _scheduleSessionActive;
   bool _scheduleCompensating;

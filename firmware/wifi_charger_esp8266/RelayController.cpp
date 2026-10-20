@@ -7,7 +7,8 @@ RelayController relayCtrl;
 RelayController::RelayController()
   : _isOn(false),
     _lastToggleTime(0),
-    _manualLockUntil(0),
+    _manualLockStartTime(0),
+    _manualLockDurationMs(0),
     _chatterFault(false),
     _toggleIndex(0),
     _toggleCount(0),
@@ -62,13 +63,15 @@ void RelayController::begin() {
 }
 
 bool RelayController::isManualLocked() const {
-  return (millis() < _manualLockUntil);
+  if (_manualLockDurationMs == 0) return false;
+  return (millis() - _manualLockStartTime < _manualLockDurationMs);
 }
 
 unsigned long RelayController::getManualLockRemainingSecs() const {
-  unsigned long now = millis();
-  if (now < _manualLockUntil) {
-    return (_manualLockUntil - now) / 1000UL;
+  if (!isManualLocked()) return 0;
+  unsigned long elapsed = millis() - _manualLockStartTime;
+  if (elapsed < _manualLockDurationMs) {
+    return (_manualLockDurationMs - elapsed) / 1000UL;
   }
   return 0;
 }
@@ -140,7 +143,8 @@ bool RelayController::setRelay(bool turnOn, bool isManual, const char* reason, S
 
   // 4. Manual Lock Timer (5 minutes when manually overridden)
   if (isManual) {
-    _manualLockUntil = now + (5UL * 60UL * 1000UL);
+    _manualLockStartTime = now;
+    _manualLockDurationMs = 5UL * 60UL * 1000UL;
   }
 
   // Execute transition

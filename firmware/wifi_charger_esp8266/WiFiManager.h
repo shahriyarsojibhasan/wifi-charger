@@ -18,7 +18,7 @@ public:
   int getRssi() const;
   bool hasIpChanged();
 
-  void connectNew(const char* ssid, const char* pass);
+  void connectNew(const char* ssid, const char* pass, int channel = 0, const char* bssid = nullptr);
   void resetCredentials();
 
 private:
@@ -30,6 +30,10 @@ private:
   unsigned long _backoffIntervalMs;
   uint8_t       _failedAttempts;
   int           _lastStatus;
+  bool          _asyncScanPending;    // True when async scan was requested but not yet collected
+  unsigned long _asyncScanStartTime;  // Timestamp when async scan was triggered
+  bool          _probingRouter;       // True when non-disruptive router probe is active
+  unsigned long _probeStartTime;      // Timestamp when probe was started
 };
 
 extern WiFiManager wifiMgr;

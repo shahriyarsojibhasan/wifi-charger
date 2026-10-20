@@ -116,51 +116,17 @@ void setup() {
   storageMgr.begin();
   yield();
 
-  // 1.1 Automatic LittleFS Clean Wipe on New Firmware Flash
+  // 1.1 Firmware Build Stamp Verification (Preserves user credentials across reflashes)
   #define FIRMWARE_BUILD_STAMP "v6.2.0_" __DATE__ "_" __TIME__
   String installedStamp;
   bool hasStamp = storageMgr.readFile("/build_stamp.txt", installedStamp);
   if (!hasStamp || installedStamp != FIRMWARE_BUILD_STAMP) {
-    Serial.println(F("\n========================================================"));
-    Serial.println(F("[BOOT] >>> NEW FIRMWARE FLASH DETECTED! <<<"));
-    Serial.println(F("[BOOT] Clean-wiping LittleFS & resetting Wi-Fi credentials..."));
-    Serial.println(F("========================================================"));
-
-    // Clear SDK persistent Wi-Fi settings permanently
-    WiFi.persistent(true);
-    WiFi.disconnect(false, true); // true = erase credentials from NVS flash
-    WiFi.persistent(false);
-    WiFi.mode(WIFI_AP_STA);
-    delay(50);
-
-    // Fast clean wipe: delete all old configuration & state files in 2ms (prevents WDT resets!)
-    storageMgr.remove("/config.json");
-    storageMgr.remove("/config.backup.json");
-    storageMgr.remove("/config.tmp.json");
-    storageMgr.remove("/sessions.dat");
-    storageMgr.remove("/time_state.json");
-    storageMgr.remove("/schedule_state.json");
-    storageMgr.remove("/auto_charge_state.json");
-    storageMgr.remove("/timer_state.json");
+    Serial.println(F("[BOOT] Firmware build stamp updated. Preserving existing user configurations and Wi-Fi credentials."));
     storageMgr.writeFile("/build_stamp.txt", FIRMWARE_BUILD_STAMP);
-
-    // Save pristine factory defaults
-    configMgr.setDefaults();
-    configMgr.save();
-    Serial.println(F("[BOOT] Previous config wiped cleanly! Pristine factory defaults applied."));
-    Serial.println(F("[BOOT] Setup AP 'Smart-Charger-Setup' (192.168.4.1) [OPEN] will now start!"));
-  } else {
-    // 1.2 Normal Boot Configuration Verification
-    String existingCfg;
-    bool hasConfig = storageMgr.readFile("/config.json", existingCfg);
-    if (!hasConfig || existingCfg.length() < 10) {
-      Serial.println(F("[BOOT] No valid configuration found. Applying pristine factory defaults..."));
-      configMgr.setDefaults();
-      configMgr.save();
-    } else {
-      Serial.println(F("[BOOT] Existing user configuration preserved from LittleFS."));
-    }
   }
+
+  // 1.2 Configuration Manager Initialization & Migration
+  configMgr.begin();
   yield();
 
   // 1.5 Restore approximate clock from LittleFS BEFORE charging controller so
@@ -248,10 +214,12 @@ void processSerialCommand(const String& line) {
     Serial.println(F("  POLARITY_HIGH- Configure Active-HIGH (3.3V=ON, 0V=OFF) & Save"));
     Serial.println(F("  FORMAT_FS    - Format LittleFS filesystem & rewrite defaults"));
     Serial.println(F("  FACTORY_RESET- Wipe Wi-Fi & LittleFS, reset to Setup AP"));
+    Serial.println(F("  SET_DEVICE_ID <id> - Set custom device ID and save"));
     Serial.println(F("  REBOOT       - Restart ESP8266"));
   } else if (line.equalsIgnoreCase("STATUS")) {
     const DeviceConfig& cfg = configMgr.get();
-    Serial.printf("[STATUS] %s | Profile=%s (Cut=%.2f-%.2fV) | Batt=%.2fV | Mismatch=%s | Disconnected=%s | State=%s | Relay=%s(D1=%d) | Polarity=%s | WiFi=%s(IP=%s) | Sched=%s(%02d:%02d-%02d:%02d,InWin=%s)\n",
+    Serial.printf("[STATUS] DevId=%s | %s | Profile=%s (Cut=%.2f-%.2fV) | Batt=%.2fV | Mismatch=%s | Disconnected=%s | State=%s | Relay=%s(D1=%d) | Polarity=%s | WiFi=%s(IP=%s) | Sched=%s(%02d:%02d-%02d:%02d,InWin=%s)\n",
+                  cfg.deviceId,
                   timeMgr.getFormattedTime12().c_str(),
                   batteryProfileToString((BatteryProfileType)cfg.batteryProfile),
                   cfg.lowCutVoltage, cfg.highCutVoltage,
@@ -268,10 +236,22 @@ void processSerialCommand(const String& line) {
                   cfg.chargeStartHour, cfg.chargeStartMinute,
                   cfg.chargeStopHour, cfg.chargeStopMinute,
                   scheduleCtrl.isScheduleActiveNow() ? "YES" : "NO");
+  } else if (line.startsWith("SET_DEVICE_ID") || line.startsWith("set_device_id")) {
+    String newId = line.substring(13);
+    newId.trim();
+    if (newId.length() > 0) {
+      DeviceConfig& cfg = configMgr.get();
+      strncpy(cfg.deviceId, newId.c_str(), sizeof(cfg.deviceId) - 1);
+      configMgr.save();
+      firebaseMgr.triggerImmediateSync();
+      Serial.printf("[SerialCmd] Device ID updated & saved: '%s'\n", cfg.deviceId);
+    } else {
+      Serial.println(F("[SerialCmd] Usage: SET_DEVICE_ID <new_device_id>"));
+    }
   } else if (line.startsWith("SET_WIFI") || line.startsWith("set_wifi")) {
     char ssid[64] = {0};
     char pass[64] = {0};
-    int n = sscanf(line.c_str() + 8, "%s %s", ssid, pass);
+    int n = sscanf(line.c_str() + 8, "%63s %63s", ssid, pass);
     if (n >= 1) {
       DeviceConfig& cfg = configMgr.get();
       strncpy(cfg.wifiSsid, ssid, sizeof(cfg.wifiSsid) - 1);
@@ -376,6 +356,17 @@ void processSerialCommand(const String& line) {
   } else if (line.equalsIgnoreCase("FACTORY_RESET") || line.equalsIgnoreCase("CLEAN_RESET")) {
     Serial.println(F("[SerialCmd] Executing full factory reset & LittleFS format..."));
     configMgr.factoryReset();
+  } else if (line.equalsIgnoreCase("SCAN") || line.equalsIgnoreCase("WIFI_SCAN")) {
+    Serial.println(F("[SerialCmd] Scanning 2.4GHz Wi-Fi networks (active probe)..."));
+    WiFi.enableSTA(true);
+    int n = WiFi.scanNetworks(false, false);
+    Serial.printf("[SerialCmd] Scan completed: %d networks found\n", n);
+    for (int i = 0; i < n; i++) {
+      Serial.printf("  [%02d] SSID: '%s' | Ch: %d | RSSI: %d dBm | %s\n",
+                    i + 1, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i),
+                    (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "OPEN" : "SECURED");
+    }
+    WiFi.scanDelete();
   } else {
     Serial.println(F("Unknown command. Type 'HELP' for list of commands."));
   }
@@ -408,13 +399,13 @@ void loop() {
   // Feed Hardware Watchdog
   watchdogMgr.feed();
 
-  // Hardware FLASH Button (GPIO0) - 3-second hold to trigger runtime Factory Reset & LittleFS Format
+  // Hardware FLASH Button (GPIO0) - 7-second hold to trigger runtime Factory Reset & LittleFS Format
   static unsigned long flashBtnPressTime = 0;
   if (digitalRead(PIN_FLASH_BTN) == LOW) {
     if (flashBtnPressTime == 0) {
       flashBtnPressTime = millis();
-    } else if (millis() - flashBtnPressTime >= 3000) {
-      Serial.println(F("[HARDWARE] FLASH button held 3s! Executing Factory Reset & LittleFS Format..."));
+    } else if (millis() - flashBtnPressTime >= 7000) {
+      Serial.println(F("[HARDWARE] FLASH button held 7s! Executing Factory Reset & LittleFS Format..."));
       for (int i = 0; i < 10; i++) {
         digitalWrite(STATUS_LED, LOW);
         delay(50);
@@ -470,22 +461,56 @@ void loop() {
 
   unsigned long now = millis();
 
-  // Status LED Logic:
-  // - Solid ON (Active-LOW: LOW) ONLY when stably connected to router Wi-Fi with a valid local IP.
-  // - Continuous Blink (250ms) during: Reconnecting, Disconnected, SoftAP Setup Mode, Power Recovery.
-  bool isWifiStable = wifiMgr.isConnected() && (WiFi.localIP()[0] != 0);
-  if (isWifiStable) {
-    digitalWrite(STATUS_LED, LOW); // Solid ON: Wi-Fi stable connected
-  } else {
-    // Router disconnected / searching / reconnecting / setup mode: Active blink
-    static unsigned long lastLedBlink = 0;
-    static bool ledBlinkState = false;
-    if (now - lastLedBlink >= 250) {
-      lastLedBlink = now;
-      ledBlinkState = !ledBlinkState;
-      digitalWrite(STATUS_LED, ledBlinkState ? LOW : HIGH);
+  // 10. LittleFS Storage Health Guard: ensure flash never fills up (every 60s)
+  static unsigned long lastStorageCheck = 0;
+  if (now - lastStorageCheck >= 60000UL) {
+    lastStorageCheck = now;
+    storageMgr.ensureStorageHealth();
+  }
+
+  // Status LED Logic (Energy-efficient — extends LED + MCU lifespan):
+  // - Connected to router: Brief 100ms heartbeat flash every 5s (saves ~95% LED power vs solid ON!)
+  //   → Less heat on ESP8266, longer LED lifespan, lower power draw
+  // - Charging (relay ON): Slow steady 1Hz blink (500ms on, 500ms off)
+  // - Disconnected/Reconnecting/SoftAP: Fast 250ms blink
+  {
+    static unsigned long lastLedEvent = 0;
+    static bool ledState = false;
+    static uint8_t ledPhase = 0; // 0=OFF period, 1=ON flash
+
+    bool isWifiStable = wifiMgr.isConnected() && (WiFi.localIP()[0] != 0);
+    bool isCharging = relayCtrl.isOn();
+
+    if (isWifiStable && !isCharging) {
+      // Heartbeat: 100ms ON, then 4900ms OFF (one brief flash per 5 seconds)
+      if (ledPhase == 0 && now - lastLedEvent >= 4900UL) {
+        ledPhase = 1;
+        lastLedEvent = now;
+        ledState = true;
+        digitalWrite(STATUS_LED, LOW); // Active-LOW: LOW = ON
+      } else if (ledPhase == 1 && now - lastLedEvent >= 100UL) {
+        ledPhase = 0;
+        lastLedEvent = now;
+        ledState = false;
+        digitalWrite(STATUS_LED, HIGH); // Active-LOW: HIGH = OFF
+      }
+    } else if (isCharging) {
+      // Charging: 1Hz slow blink (500ms on, 500ms off) — visible charging indicator
+      if (now - lastLedEvent >= 500UL) {
+        lastLedEvent = now;
+        ledState = !ledState;
+        digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
+      }
+    } else {
+      // Disconnected / reconnecting / setup mode: Fast 250ms blink
+      if (now - lastLedEvent >= 250UL) {
+        lastLedEvent = now;
+        ledState = !ledState;
+        digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
+      }
     }
   }
+
 
   // Periodic Serial Diagnostic Heartbeat (every 3 seconds)
   static unsigned long lastSerialHeartbeat = 0;

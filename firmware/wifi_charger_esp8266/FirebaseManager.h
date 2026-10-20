@@ -17,6 +17,10 @@ public:
 
   bool isOnline() const { return _isOnline; }
 
+  String buildUrl(const String& path);
+  void syncOfflineSessions();
+  void syncDailyBills();
+
 private:
   bool             _isOnline;
   bool             _immediateSyncRequested;
@@ -26,7 +30,11 @@ private:
   unsigned long    _lastSyncTime;
   unsigned long    _lastPollTime;
   unsigned long    _lastFullSyncTime;
+  unsigned long    _lastSessionSyncTime;
+  unsigned long    _lastBillSyncTime;
   String           _lastProcessedCmdId;
+  String           _lastProcessedPayload;
+  unsigned long    _lastCmdExecuteTime;
 
   void syncState(bool forceFull = false);
   void pollCommands();

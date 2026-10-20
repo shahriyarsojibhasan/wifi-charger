@@ -49,11 +49,11 @@ void VoltageSensor::begin() {
 float VoltageSensor::readVoltage() {
   const DeviceConfig& cfg = configMgr.get();
 
-  // 20-sample oversampling to suppress noise and mains ripple
+  // 20-sample oversampling to suppress noise and mains ripple without blocking CPU
   long sum = 0;
   for (int i = 0; i < 20; i++) {
     sum += analogRead(PIN_ADC);
-    delay(1);
+    delayMicroseconds(50);
   }
   float avg = sum / 20.0f;
   // If pin is floating (unplugged), NodeMCU A0 ADC readings typically float between 5 and 50 counts.

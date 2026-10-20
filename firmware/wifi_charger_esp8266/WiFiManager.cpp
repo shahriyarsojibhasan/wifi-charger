@@ -4,6 +4,7 @@
 #include "DnsPortal.h"
 #include "MdnsManager.h"
 #include "DiscoveryManager.h"
+#include "HttpServer.h"
 
 WiFiManager wifiMgr;
 
@@ -15,7 +16,11 @@ WiFiManager::WiFiManager()
     _disconnectStartTime(0),
     _backoffIntervalMs(15000),
     _failedAttempts(0),
-    _lastStatus(-1)
+    _lastStatus(-1),
+    _asyncScanPending(false),
+    _asyncScanStartTime(0),
+    _probingRouter(false),
+    _probeStartTime(0)
 {
 }
 
@@ -24,9 +29,9 @@ WiFiManager::WiFiManager()
 // ─────────────────────────────────────────────────────────────────────────────
 void WiFiManager::begin() {
   WiFi.persistent(false);
-  WiFi.setAutoReconnect(false);
-  WiFi.setSleepMode(WIFI_NONE_SLEEP); // Never power-down radio
-  WiFi.setOutputPower(17.5f);
+  WiFi.setAutoReconnect(true); // Hardware auto-reconnect enabled for rock-solid stability
+  WiFi.setSleepMode(WIFI_NONE_SLEEP); // Never power-down radio → stable connection + fast response
+  WiFi.setOutputPower(20.5f); // Maximum RF output power (20.5 dBm)
 
   const DeviceConfig& cfg = configMgr.get();
   bool hasWifi = (strlen(cfg.wifiSsid) > 0);
@@ -35,6 +40,16 @@ void WiFiManager::begin() {
     // ── STA Mode: Connect to saved router ─────────────────────────────────
     Serial.printf("[WiFiMgr] STA: Connecting to '%s'...\n", cfg.wifiSsid);
     WiFi.mode(WIFI_STA);
+
+    // Apply cached static IP for instant reconnect (skips DHCP, saves ~500ms)
+    if (cfg.cachedIp != 0 && cfg.cachedGateway != 0) {
+      IPAddress ip(cfg.cachedIp), gw(cfg.cachedGateway),
+                sub(cfg.cachedSubnet ? cfg.cachedSubnet : 0x00FFFFFF),
+                dns(cfg.cachedDns ? cfg.cachedDns : cfg.cachedGateway);
+      WiFi.config(ip, gw, sub, dns);
+      Serial.printf("[WiFiMgr] Using cached IP=%s GW=%s (fast reconnect)\n",
+                    ip.toString().c_str(), gw.toString().c_str());
+    }
 
     // Parse saved BSSID string → uint8_t[6] for directed probe
     // Critical for hidden SSIDs: directed probe = instant connect <1.5s!
@@ -49,6 +64,7 @@ void WiFiManager::begin() {
       }
     }
 
+    // Attempt 1: BSSID-directed probe (fastest, works for hidden SSIDs)
     if (hasBssid && cfg.wifiChannel >= 1 && cfg.wifiChannel <= 13) {
       Serial.printf("[WiFiMgr] BSSID-directed probe ch%d BSSID=%s (hidden SSID OK)...\n",
                     cfg.wifiChannel, cfg.wifiBssid);
@@ -61,16 +77,17 @@ void WiFiManager::begin() {
       WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
     }
 
-    // Wait up to 14 seconds (hidden networks need active directed probes)
+    // Wait up to 7 seconds (if router is off, start fallback SoftAP quickly!)
     unsigned long start = millis();
     bool channelFallbackDone = false;
-    while (WiFi.status() != WL_CONNECTED && (millis() - start < 14000)) {
-      delay(250);
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 7000)) {
+      delay(200);
       yield();
-      // After 5s without connection, try full 13-channel broadcast scan
-      if (!channelFallbackDone && (millis() - start >= 5000)) {
+      // After 3.5s without connection on directed probe, try full broadcast scan
+      if (!channelFallbackDone && (millis() - start >= 3500)) {
         channelFallbackDone = true;
-        Serial.println(F("[WiFiMgr] Channel probe expired. Full 13-ch active scan..."));
+        Serial.println(F("[WiFiMgr] Directed probe timed out. Full broadcast scan..."));
+        WiFi.config(0U, 0U, 0U); // Release static IP before full scan
         WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
       }
     }
@@ -89,6 +106,20 @@ void WiFiManager::begin() {
         mcfg.wifiChannel = connectedCh;
         cfgChanged = true;
       }
+
+      // Cache network params for instant reconnect after power loss
+      IPAddress curIp  = WiFi.localIP();
+      IPAddress curGw  = WiFi.gatewayIP();
+      IPAddress curSub = WiFi.subnetMask();
+      IPAddress curDns = WiFi.dnsIP();
+      if ((uint32_t)curIp != mcfg.cachedIp || (uint32_t)curGw != mcfg.cachedGateway) {
+        mcfg.cachedIp      = (uint32_t)curIp;
+        mcfg.cachedGateway = (uint32_t)curGw;
+        mcfg.cachedSubnet  = (uint32_t)curSub;
+        mcfg.cachedDns     = (uint32_t)curDns;
+        cfgChanged = true;
+      }
+
       uint8_t* bssidBytes = WiFi.BSSID();
       if (bssidBytes) {
         char bssidStr[18];
@@ -107,17 +138,21 @@ void WiFiManager::begin() {
       // Radio 100% in STA mode - stop SoftAP for zero-latency LAN response
       apMgr.stop();
       WiFi.mode(WIFI_STA);
-      WiFi.setAutoReconnect(true); // Let SDK handle background reconnect
+      WiFi.setAutoReconnect(true);
       Serial.printf("[WiFiMgr] CONNECTED! SSID=%s IP=%s Ch=%d BSSID=%s (100%% STA)\n",
                     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
                     connectedCh, mcfg.wifiBssid);
     } else {
       // ── Boot connect timed out: start fallback SoftAP ────────────────────
-      Serial.println(F("[WiFiMgr] Boot connect timed out (>14s). Starting fallback SoftAP..."));
+      Serial.println(F("[WiFiMgr] Boot connect timed out (>7s). Starting fallback SoftAP..."));
       _lastAttemptTime = millis();
       _disconnectStartTime = millis();
       _failedAttempts = 0;
       _lastConnected = false;
+      _probingRouter = false;
+      WiFi.disconnect(false);       // Immediately stop STA scanning!
+      WiFi.setAutoReconnect(false); // Silence SDK auto-reconnect!
+      WiFi.config(0U, 0U, 0U);      // Release any static IP config
       apMgr.begin(1);
     }
 
@@ -184,6 +219,8 @@ void WiFiManager::loop() {
   if (currentStatus == WL_CONNECTED && WiFi.localIP()[0] != 0) {
     // ── CONNECTED state ───────────────────────────────────────────────────
     _disconnectStartTime = 0;
+    _failedAttempts = 0;
+    _asyncScanPending = false; // Cancel any pending scan on connect
 
     // When connected to router: STOP SoftAP for 0 latency LAN response
     if (apMgr.isActive()) {
@@ -236,9 +273,9 @@ void WiFiManager::loop() {
         configMgr.save();
       }
 
-      Serial.printf("[WiFiMgr] CONNECTED! SSID=%s IP=%s Ch=%d BSSID=%s RSSI=%d dBm\n",
+      Serial.printf("[WiFiMgr] CONNECTED! SSID=%s IP=%s Ch=%d RSSI=%d dBm\n",
                     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
-                    connectedCh, mcfg.wifiBssid, WiFi.RSSI());
+                    connectedCh, WiFi.RSSI());
 
       mdnsMgr.restart();
       discoveryMgr.restart();
@@ -258,54 +295,71 @@ void WiFiManager::loop() {
       _disconnectStartTime = now;
       _lastAttemptTime = now;
       _failedAttempts = 0;
+      _probingRouter = false;
+      // Disable SDK background auto-reconnect and disconnect STA so radio is 100% quiet on SoftAP!
+      WiFi.disconnect(false);
       WiFi.setAutoReconnect(false);
-      Serial.println(F("[WiFiMgr] Router disconnected. Manual retry in background..."));
+      Serial.println(F("[WiFiMgr] Router disconnected. Launching fallback SoftAP (192.168.4.1)..."));
+      apMgr.begin(1);
     }
 
-    // After 10s disconnected: open fallback SoftAP so user is never locked out
-    if (_disconnectStartTime > 0 && (now - _disconnectStartTime >= 10000UL)) {
-      if (!apMgr.isActive()) {
-        Serial.println(F("[WiFiMgr] Disconnected >10s → launching fallback SoftAP (192.168.4.1)..."));
-        apMgr.begin(1);
+    // Ensure fallback SoftAP is running so user is never locked out
+    if (!apMgr.isActive()) {
+      Serial.println(F("[WiFiMgr] STA Disconnected → launching fallback SoftAP (192.168.4.1)..."));
+      WiFi.disconnect(false);
+      WiFi.setAutoReconnect(false);
+      _probingRouter = false;
+      apMgr.begin(1);
+    }
+
+    int stationsConnected = WiFi.softAPgetStationNum();
+
+    // ── SUB-STATE 1: PROBING ROUTER IN PROGRESS ──
+    if (_probingRouter) {
+      // Check if connection succeeded
+      if (currentStatus == WL_CONNECTED && WiFi.localIP()[0] != 0) {
+        Serial.println(F("[WiFiMgr] Router re-connected successfully during probe!"));
+        _probingRouter = false;
+        return;
       }
-    }
 
-    // If a phone is actively connected to SoftAP: PAUSE STA channel hopping!
-    // On ESP8266, STA probing changes radio frequency → drops AP clients.
-    if (apMgr.isActive() && WiFi.softAPgetStationNum() > 0) {
-      _lastAttemptTime = now; // Defer reconnect while user is on the portal
+      // If phone starts connecting (stationsConnected > 0) OR probe reaches 2.5s timeout:
+      if (stationsConnected > 0 || (now - _probeStartTime >= 2500UL)) {
+        if (stationsConnected > 0) {
+          Serial.println(F("[WiFiMgr] Phone connecting to SoftAP! Aborted router probe to prioritize phone connection."));
+        } else {
+          Serial.println(F("[WiFiMgr] Router probe finished (2.5s, not found). Disconnecting STA, locking radio to SoftAP Channel 1."));
+        }
+        WiFi.disconnect(false);
+        WiFi.setAutoReconnect(false);
+        _probingRouter = false;
+        _lastAttemptTime = now; // Stay quiet for the next 35 seconds!
+      }
       return;
     }
 
-    // Background retry every 15s: alternate BSSID-directed (fast) and full-scan
-    if (now - _lastAttemptTime >= 15000UL) {
+    // ── SUB-STATE 2: PHONE CONNECTED SHIELD ──
+    // When a phone or client is actively connected to the SoftAP (stationsConnected > 0):
+    // 1. Keep NonOS SDK auto-reconnect completely off!
+    // 2. Radio stays 100% on SoftAP. NEVER probe or scan!
+    if (stationsConnected > 0) {
+      WiFi.setAutoReconnect(false);
+      _lastAttemptTime = now; // Defer router reconnect indefinitely while phone is active
+      return;
+    }
+
+    // ── SUB-STATE 3: NON-DISRUPTIVE ROUTER PROBE (Every 35s, ONLY when NO phone is connected) ──
+    if (now - _lastAttemptTime >= 35000UL) {
       _lastAttemptTime = now;
+      _probeStartTime = now;
+      _probingRouter = true;
       _failedAttempts++;
-
-      uint8_t bssid[6] = {0};
-      bool hasBssid = false;
-      if (strlen(cfg.wifiBssid) == 17) {
-        int b0,b1,b2,b3,b4,b5;
-        if (sscanf(cfg.wifiBssid, "%x:%x:%x:%x:%x:%x",&b0,&b1,&b2,&b3,&b4,&b5)==6) {
-          bssid[0]=(uint8_t)b0; bssid[1]=(uint8_t)b1; bssid[2]=(uint8_t)b2;
-          bssid[3]=(uint8_t)b3; bssid[4]=(uint8_t)b4; bssid[5]=(uint8_t)b5;
-          hasBssid = (b0||b1||b2||b3||b4||b5);
-        }
-      }
-
-      if (hasBssid && cfg.wifiChannel >= 1 && cfg.wifiChannel <= 13 && (_failedAttempts % 2 == 1)) {
-        // Fast BSSID-directed probe (works for hidden SSIDs!)
-        Serial.printf("[WiFiMgr] BSSID probe ch%d BSSID=%s '%s' (attempt #%d)...\n",
-                      cfg.wifiChannel, cfg.wifiBssid, cfg.wifiSsid, _failedAttempts);
-        WiFi.begin(cfg.wifiSsid, cfg.wifiPass, cfg.wifiChannel, bssid, true);
-      } else if (cfg.wifiChannel >= 1 && cfg.wifiChannel <= 13 && (_failedAttempts % 2 == 1)) {
-        Serial.printf("[WiFiMgr] Channel probe ch%d '%s' (attempt #%d)...\n",
-                      cfg.wifiChannel, cfg.wifiSsid, _failedAttempts);
+      Serial.printf("[WiFiMgr] Safe background probe for '%s' (ch=%d, attempt #%d)...\n",
+                    cfg.wifiSsid, cfg.wifiChannel, _failedAttempts);
+      WiFi.setAutoReconnect(false); // CRITICAL: Never let NonOS SDK start continuous background scanning!
+      if (cfg.wifiChannel >= 1 && cfg.wifiChannel <= 13) {
         WiFi.begin(cfg.wifiSsid, cfg.wifiPass, cfg.wifiChannel);
       } else {
-        // Full 13-channel scan
-        Serial.printf("[WiFiMgr] Full scan for '%s' (attempt #%d)...\n",
-                      cfg.wifiSsid, _failedAttempts);
         WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
       }
     }
@@ -347,17 +401,46 @@ bool WiFiManager::hasIpChanged() {
   return false;
 }
 
-void WiFiManager::connectNew(const char* ssid, const char* pass) {
+void WiFiManager::connectNew(const char* ssid, const char* pass, int channel, const char* bssid) {
   DeviceConfig& cfg = configMgr.get();
   strncpy(cfg.wifiSsid, ssid, sizeof(cfg.wifiSsid) - 1);
+  cfg.wifiSsid[sizeof(cfg.wifiSsid) - 1] = '\0';
   strncpy(cfg.wifiPass, pass, sizeof(cfg.wifiPass) - 1);
-  cfg.wifiChannel = 0;    // Reset so next boot does full scan first
-  memset(cfg.wifiBssid, 0, sizeof(cfg.wifiBssid)); // Reset BSSID cache too
+  cfg.wifiPass[sizeof(cfg.wifiPass) - 1] = '\0';
+  cfg.wifiChannel = 0; // Let router negotiate channel freely!
+  memset(cfg.wifiBssid, 0, sizeof(cfg.wifiBssid));
+
+  // Clear cached IP so we get fresh DHCP from router
+  cfg.cachedIp = 0;
+  cfg.cachedGateway = 0;
+  cfg.cachedSubnet = 0;
+  cfg.cachedDns = 0;
   configMgr.save();
 
-  Serial.printf("[WiFiMgr] Saved new credentials for '%s'. Rebooting...\n", ssid);
-  delay(300);
-  ESP.restart();
+  Serial.printf("[WiFiMgr] Saved new credentials for '%s'. Initiating STA connect (SoftAP stays alive)...\n",
+                cfg.wifiSsid);
+
+  // 1. Release static IP so fresh DHCP from router is always requested
+  WiFi.config(0U, 0U, 0U);
+
+  // 2. Keep SoftAP alive in WIFI_AP_STA mode so the phone NEVER disconnects during setup!
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(true);
+
+  // 3. Disconnect previous STA association cleanly
+  WiFi.disconnect(false);
+  delay(100);
+
+  // 4. Begin connection on all channels (multi-channel broadcast probe)
+  WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
+
+  // 5. Reset state machine so loop() properly detects the new connection
+  _lastConnected = false;
+  _lastAttemptTime = millis();
+  _disconnectStartTime = millis();
+  _failedAttempts = 0;
+  _lastStatus = -1; // Force status log on next loop tick
+  _asyncScanPending = false;
 }
 
 void WiFiManager::resetCredentials() {

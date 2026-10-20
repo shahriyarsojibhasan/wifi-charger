@@ -46,7 +46,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shahriyar.smartwificharger.domain.model.RelayDiagnosticStatus
 import com.shahriyar.smartwificharger.domain.model.SensorDiagnosticStatus
-import com.shahriyar.smartwificharger.presentation.components.DailyScheduleTaskCard
 import com.shahriyar.smartwificharger.presentation.components.EstimatedCostCard
 import com.shahriyar.smartwificharger.presentation.components.FaultBanner
 import com.shahriyar.smartwificharger.presentation.components.QuickTimerRow
@@ -112,6 +111,43 @@ fun DashboardScreen(
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Top Device & Profile Info Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "ID: ",
+                    fontSize = 11.sp,
+                    color = TextMuted
+                )
+                Text(
+                    text = state.config.deviceId,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = NeonCyan
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SurfaceCard)
+                    .border(1.dp, BorderDark, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = "Profile: ${state.config.batteryProfile} (${"%.1f".format(state.config.lowCut)}-${"%.1f".format(state.config.highCut)}V)",
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = ElectricGreen
+                )
+            }
+        }
+
         // Battery Profile Mismatch Alert Card (Clear, actionable, no false "sensor unreachable")
         if (isMismatch) {
             Box(
@@ -349,26 +385,6 @@ fun DashboardScreen(
             timerActive = state.isMcuOnline && state.telemetry.timerActive,
             remainingSeconds = if (state.isMcuOnline) state.telemetry.timerRemainingSeconds else 0,
             onSetTimer = onSetTimer
-        )
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // Daily Calendar Schedule Task System Card
-        DailyScheduleTaskCard(
-            isMcuOnline = state.isMcuOnline,
-            scheduleTodayCompleted = state.telemetry.scheduleTodayCompleted,
-            scheduleTodayDate = state.telemetry.scheduleTodayDate,
-            scheduleTodayStatus = state.telemetry.scheduleTodayStatus,
-            scheduleCompensating = state.telemetry.scheduleCompensating,
-            scheduleRemainingSeconds = state.telemetry.scheduleRemainingSeconds,
-            scheduleChargedSecs = state.telemetry.scheduleChargedSecs,
-            scheduleTotalSecs = state.telemetry.scheduleTotalSecs,
-            startHour = state.config.chargeStartHour,
-            startMinute = state.config.chargeStartMinute,
-            stopHour = state.config.chargeStopHour,
-            stopMinute = state.config.chargeStopMinute,
-            isBn = isBn,
-            onResetSchedule = onResetSchedule
         )
 
         Spacer(modifier = Modifier.height(14.dp))

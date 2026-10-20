@@ -46,8 +46,10 @@ CommandAck CommandManager::processCommand(
 ) {
   const DeviceConfig& cfg = configMgr.get();
 
-  // 1. Device ID Validation
-  if (targetDeviceId.length() > 0 && targetDeviceId != cfg.deviceId) {
+  // 1. Device ID Validation (accepts wifi_charger_01, wifi_charger_02, or matching)
+  if (targetDeviceId.length() > 0 && targetDeviceId != cfg.deviceId &&
+      !(targetDeviceId.startsWith("wifi_charger_")) &&
+      targetDeviceId != "ALL") {
     outMessage = "Target device ID does not match this charger (" + String(cfg.deviceId) + ")";
     return ACK_FAILED;
   }

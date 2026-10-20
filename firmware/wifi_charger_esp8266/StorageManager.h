@@ -13,6 +13,7 @@ public:
 
   bool readFile(const char* path, String& outContent);
   bool writeFile(const char* path, const String& content);
+  bool safeWriteAtomic(const char* path, const String& content);
   bool appendFile(const char* path, const String& content);
   bool exists(const char* path);
   bool remove(const char* path);
@@ -22,6 +23,7 @@ public:
   size_t getFreeBytes() const;
   float  getUsagePercent() const;
   bool   isMounted() const { return _mounted; }
+  void   ensureStorageHealth();
 
 private:
   bool _mounted;

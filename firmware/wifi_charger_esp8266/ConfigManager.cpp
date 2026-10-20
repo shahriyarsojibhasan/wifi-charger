@@ -25,10 +25,10 @@ void ConfigManager::setDefaults() {
   strncpy(_config.apPass, DEFAULT_AP_PASS, sizeof(_config.apPass) - 1);
   _config.apEnabled           = true;
 
-  _config.batteryProfile      = PROFILE_5V;
-  _config.lowCutVoltage       = 4.2f;
-  _config.highCutVoltage      = 5.5f;
-  _config.hysteresisVoltage   = 0.15f;
+  _config.batteryProfile      = PROFILE_LEAD_ACID_CONSERVATIVE;
+  _config.lowCutVoltage       = 11.0f;
+  _config.highCutVoltage      = 12.8f;
+  _config.hysteresisVoltage   = 0.25f;
   _config.minOnTimeSecs       = 15;
   _config.minOffTimeSecs      = 15;
 
@@ -40,13 +40,13 @@ void ConfigManager::setDefaults() {
   _config.autoMode            = true;
   _config.solarBackupEnabled  = true;
 
-  _config.scheduleEnabled     = false;
+  _config.scheduleEnabled     = true;
   _config.scheduleDaysBitmask = 127; // Default all 7 days (everyday)
-  _config.chargeStartHour     = 3; // 03:00 AM
+  _config.chargeStartHour     = 2;   // 02:00 AM (2 AM)
   _config.chargeStartMinute   = 0;
-  _config.chargeStopHour      = 4; // 04:00 AM
+  _config.chargeStopHour      = 4;   // 04:00 AM (4 AM)
   _config.chargeStopMinute    = 0;
-  _config.timezoneOffsetHours = 6; // UTC+6 (Dhaka)
+  _config.timezoneOffsetHours = 6;   // UTC+6 (Dhaka)
 
   _config.chargerWatt         = 100.0f;
   _config.chargerAmps         = 1.7f;
@@ -202,7 +202,48 @@ bool ConfigManager::load() {
   String err;
   if (readConfigFile("/config.json", json)) {
     if (fromJson(json, err)) {
-      Serial.println(F("[ConfigMgr] Loaded configuration from LittleFS /config.json"));
+      bool migrated = false;
+      if (strcmp(_config.deviceId, "wifi_charger_02") == 0 || strcmp(_config.deviceId, "") == 0) {
+        strncpy(_config.deviceId, DEFAULT_DEVICE_ID, sizeof(_config.deviceId) - 1);
+        migrated = true;
+        Serial.printf("[ConfigMgr] Migrated device ID to: %s\n", DEFAULT_DEVICE_ID);
+      }
+      if (_config.batteryProfile == PROFILE_5V || _config.lowCutVoltage < 5.0f) {
+        _config.batteryProfile = PROFILE_LEAD_ACID_CONSERVATIVE;
+        _config.lowCutVoltage = 11.0f;
+        _config.highCutVoltage = 12.8f;
+        _config.hysteresisVoltage = 0.25f;
+        migrated = true;
+        Serial.println(F("[ConfigMgr] Migrated profile to: LEAD_ACID_CONSERVATIVE (11.0V - 12.8V)"));
+      }
+      if (!_config.scheduleEnabled || (_config.chargeStartHour == 3 && _config.chargeStopHour == 4) || _config.chargeStopHour == 16) {
+        _config.scheduleEnabled = true;
+        _config.chargeStartHour = 2;
+        _config.chargeStartMinute = 0;
+        _config.chargeStopHour = 4;
+        _config.chargeStopMinute = 0;
+        _config.scheduleDaysBitmask = 127;
+        migrated = true;
+        Serial.println(F("[ConfigMgr] Migrated schedule to: Everyday 02:00 AM - 04:00 AM"));
+      }
+      if (strcmp(_config.apSsid, DEFAULT_AP_SSID) != 0) {
+        strncpy(_config.apSsid, DEFAULT_AP_SSID, sizeof(_config.apSsid) - 1);
+        _config.apSsid[sizeof(_config.apSsid) - 1] = '\0';
+        migrated = true;
+        Serial.printf("[ConfigMgr] Migrated AP SSID to: %s\n", DEFAULT_AP_SSID);
+      }
+      if (strcmp(_config.deviceId, "wifi_charger_01") == 0) {
+        strncpy(_config.deviceId, "wifi_charger_02", sizeof(_config.deviceId) - 1);
+        migrated = true;
+        Serial.println(F("[ConfigMgr] Device ID migrated to: wifi_charger_02"));
+      }
+      if (strlen(_config.apPass) < 8) {
+        strncpy(_config.apPass, DEFAULT_AP_PASS, sizeof(_config.apPass) - 1);
+        migrated = true;
+      }
+      if (migrated) {
+        save();
+      }
       return true;
     } else {
       Serial.printf("[ConfigMgr] Corrupt /config.json: %s. Trying backup...\n", err.c_str());
@@ -212,6 +253,9 @@ bool ConfigManager::load() {
   if (readConfigFile("/config.backup.json", json)) {
     if (fromJson(json, err)) {
       Serial.println(F("[ConfigMgr] Recovered configuration from /config.backup.json"));
+      if (strcmp(_config.deviceId, "wifi_charger_01") == 0) {
+        strncpy(_config.deviceId, DEFAULT_DEVICE_ID, sizeof(_config.deviceId) - 1);
+      }
       save(); // Re-sync primary
       return true;
     }

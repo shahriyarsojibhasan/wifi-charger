@@ -73,6 +73,8 @@ data class ChargerUiState(
     val dailyBills: List<com.shahriyar.smartwificharger.domain.model.DailyBill> = emptyList(),
     val weatherStatus: String = "CLEAR",
     val weatherManualOverride: Boolean = false,
+    val availableDevices: List<String> = listOf("wifi_charger_01"),
+    val detectedDeviceId: String? = null,
     val snackbarMessage: String? = null
 )
 
@@ -159,7 +161,7 @@ class ChargerViewModel(
             isWeatherCloudy = prefs.cachedWeatherIsCloudy
         )}
         syncWeather(prefs.weatherLat.toDouble(), prefs.weatherLon.toDouble(), prefs.weatherLocationName)
-
+        refreshAvailableDevices()
     }
 
     private fun observeDecoupledStates() {
@@ -180,7 +182,8 @@ class ChargerViewModel(
         }
         viewModelScope.launch {
             repository.diagnostics.collect { diag ->
-                _uiState.update { it.copy(diagnostics = diag) }
+                val detected = diag.deviceId.takeIf { it.isNotBlank() && it != "NONE" && it != "N/A" }
+                _uiState.update { it.copy(diagnostics = diag, detectedDeviceId = detected ?: it.detectedDeviceId) }
             }
         }
         viewModelScope.launch {
@@ -559,19 +562,50 @@ class ChargerViewModel(
         showMessage("Connection settings saved and updated")
     }
 
+    fun refreshAvailableDevices() {
+        viewModelScope.launch {
+            try {
+                val devices = repository.getAvailableDevices()
+                if (devices.isNotEmpty()) {
+                    _uiState.update { it.copy(availableDevices = devices) }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun switchDevice(newDevId: String) {
+        if (newDevId.isBlank()) return
+        viewModelScope.launch {
+            prefs.deviceId = newDevId
+            _uiState.update { it.copy(deviceIdSetting = newDevId) }
+            repository.updateSettings(prefs.localEspIp, prefs.firebaseDbUrl, newDevId)
+            showMessage("Switched active device to: $newDevId")
+            triggerManualProbe()
+        }
+    }
+
     fun discoverLocalEsp() {
         viewModelScope.launch {
             _uiState.update { it.copy(isScanning = true) }
             val foundUrl = repository.connectionManager.probeConnection()
             val discoveredUrl = repository.connectionManager.activeEndpoint.value
+            val detectedId = repository.connectionManager.diagnostics.value.deviceId.trim()
             _uiState.update { it.copy(isScanning = false) }
             if (discoveredUrl != null) {
                 prefs.localEspIp = discoveredUrl
-                _uiState.update { it.copy(localIpSetting = discoveredUrl) }
-                showMessage("Discovered charger at $discoveredUrl (Transport: ${foundUrl.name})")
+                if (detectedId.isNotBlank() && detectedId != "NONE" && detectedId != "N/A" && detectedId != prefs.deviceId) {
+                    prefs.deviceId = detectedId
+                    repository.updateSettings(discoveredUrl, prefs.firebaseDbUrl, detectedId)
+                    _uiState.update { it.copy(localIpSetting = discoveredUrl, deviceIdSetting = detectedId, detectedDeviceId = detectedId) }
+                    showMessage("Auto-detected & switched to charger: $detectedId at $discoveredUrl")
+                } else {
+                    _uiState.update { it.copy(localIpSetting = discoveredUrl, detectedDeviceId = detectedId.takeIf { it != "NONE" && it != "N/A" }) }
+                    showMessage("Discovered charger at $discoveredUrl (Transport: ${foundUrl.name})")
+                }
             } else {
                 showMessage("No Smart Charger device found on local network")
             }
+            refreshAvailableDevices()
         }
     }
 
@@ -721,25 +755,39 @@ class ChargerViewModel(
 
     fun scanWifiNetworks() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true) }
+            _uiState.update { it.copy(isScanning = true, scannedNetworks = emptyList()) }
+            showMessage("Scanning Wi-Fi networks... (may take up to 12s)")
             val nets = repository.scanWifi()
-            if (nets != null) {
+            if (!nets.isNullOrEmpty()) {
                 _uiState.update { it.copy(isScanning = false, scannedNetworks = nets) }
+                showMessage("Found ${nets.size} Wi-Fi network(s)")
+            } else if (nets != null) {
+                // Empty list — no networks found
+                _uiState.update { it.copy(isScanning = false, scannedNetworks = emptyList()) }
+                showMessage("No Wi-Fi networks found. Try again.")
             } else {
                 _uiState.update { it.copy(isScanning = false) }
-                showMessage("Failed to scan Wi-Fi. Ensure device is reachable via Local/AP.")
+                showMessage("Failed to scan Wi-Fi. Ensure device is reachable via Local AP (192.168.4.1).")
             }
         }
     }
 
     fun connectDeviceToWifi(ssid: String, pass: String) {
         viewModelScope.launch {
-            showMessage("Sending credentials to ESP...")
+            showMessage("Sending Wi-Fi credentials to device...")
             val res = repository.saveWifi(ssid, pass)
             if (res.success) {
-                showMessage("Success! ESP is rebooting to connect to $ssid")
+                showMessage("Credentials saved! ESP is connecting to '$ssid'... Please wait up to 15s.")
+                // Clear scanned list so user sees fresh state after reconnect
+                _uiState.update { it.copy(scannedNetworks = emptyList()) }
+                // Wait for ESP to connect to new router and for ConnectionManager to detect it
+                delay(8000L)
+                triggerManualProbe()
+                delay(4000L)
+                triggerManualProbe()
+                refreshAvailableDevices()
             } else {
-                showMessage("Failed to save credentials: ${res.message}")
+                showMessage("Failed to save credentials: ${res.message ?: "Device not reachable via AP"}")
             }
         }
     }

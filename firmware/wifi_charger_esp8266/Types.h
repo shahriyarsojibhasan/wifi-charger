@@ -22,12 +22,12 @@ const float MIN_VALID_VOLTAGE        = 2.0f;  // Below this, battery/sensor disc
 // ====================================================================================================
 // SYSTEM CONSTANTS
 // ====================================================================================================
-#define FIRMWARE_VERSION       "6.1.0-PROD"
-#define DEFAULT_DEVICE_NAME    "Smart Charger"
-#define DEFAULT_DEVICE_ID      "wifi_charger_01"
-#define DEFAULT_AP_SSID        "Smart-Charger"
+#define FIRMWARE_VERSION       "6.2.0-PROD"
+#define DEFAULT_DEVICE_NAME    "SMART CHARGER CONTROLLER"
+#define DEFAULT_DEVICE_ID      "wifi_charger_02"
+#define DEFAULT_AP_SSID        "SMART-CHARGER-CONTROLLER"
 #define DEFAULT_AP_PASS        "12345678"
-#define SETUP_AP_SSID          "Smart-Charger-Setup"
+#define SETUP_AP_SSID          "SMART-CHARGER-SETUP"
 #define DEFAULT_MDNS_HOST      "smartcontroller"
 #define UDP_DISCOVERY_PORT     8266
 #define MAX_OFFLINE_SESSIONS   10
@@ -243,17 +243,17 @@ struct DeviceConfig {
   uint32_t configVersion;
   uint32_t updatedAt;
   char     deviceId[32];
-  char     deviceName[32];
+  char     deviceName[64];
 
   // Wi-Fi STA
-  char     wifiSsid[33];
+  char     wifiSsid[64];
   char     wifiPass[65];
   uint8_t  wifiChannel;
   char     wifiBssid[18];  // Saved BSSID for reliable hidden-SSID reconnect ("AA:BB:CC:DD:EE:FF")
 
   // SoftAP
-  char     apSsid[33];
-  char     apPass[33];
+  char     apSsid[64];
+  char     apPass[64];
   bool     apEnabled;
 
   // Battery & Cutoff Profile

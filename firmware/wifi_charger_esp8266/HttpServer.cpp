@@ -13,6 +13,8 @@
 #include "HealthManager.h"
 #include "StorageManager.h"
 #include "WeatherManager.h"
+#include <vector>
+#include <algorithm>
 
 HttpServer httpSrvr;
 
@@ -131,11 +133,17 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <div class="card" style="border-color:#38BDF8;">
       <div style="font-size:14px;font-weight:bold;margin-bottom:6px;color:var(--accent)" id="lbl-wifi-header">📶 Connect Home Wi-Fi Router</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;" id="lbl-wifi-sub">Connect to local router for mobile app control and cloud sync.</div>
-      <button class="btn" style="border-color:#38BDF8;color:#38BDF8;margin-bottom:10px;" onclick="scanWifi()" id="btn-scan-wifi">🔍 Scan Wi-Fi Networks</button>
+
+      <div style="font-size:11px;color:#38BDF8;background:rgba(56,189,248,0.1);padding:8px 10px;border-radius:6px;border-left:3px solid #38BDF8;margin-bottom:10px;line-height:1.4;">
+        💡 <b>পরামর্শ:</b> আপনার ওয়াইফাই নাম জানা থাকলে স্ক্যান না করেই সরাসরি নিচের বক্সে নাম ও পাসওয়ার্ড লিখে <b>Save & Connect</b> চাপুন।<br>
+        <span style="font-size:10px;color:#94A3B8;">(ফোনে Mobile Data অন থাকলে সাময়িক বন্ধ রাখুন)</span>
+      </div>
+
+      <button class="btn" style="border-color:#38BDF8;color:#38BDF8;margin-bottom:10px;" onclick="scanWifi()" id="btn-scan-wifi">🔍 Scan Nearby Networks</button>
       <div id="wifi-list" style="margin-bottom:10px;display:none;"></div>
 
       <label id="lbl-ssid">Wi-Fi Network Name / SSID (Supports Hidden Networks):</label>
-      <input type="text" id="ssid" placeholder="Enter Wi-Fi SSID (or type Hidden SSID)">
+      <input type="text" id="ssid" placeholder="Type Wi-Fi Name (e.g. MyRouter)">
 
       <label id="lbl-pass">Wi-Fi Password:</label>
       <input type="password" id="pass" placeholder="Enter Wi-Fi Password">
@@ -158,7 +166,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <div style="font-size:12px;margin-bottom:10px;color:var(--green);font-weight:bold;">Active Profile: <span id="ui-active-profile" style="color:#FFF;">--</span></div>
       <div class="preset-row">
         <button class="preset-btn" onclick="applyPreset(11.8, 14.4, 0.30, 'LEAD_ACID_12V')">12V Standard</button>
-        <button class="preset-btn" onclick="applyPreset(11.0, 12.8, 0.30, 'LEAD_ACID_CONSERVATIVE')">12V (11-12.8V)</button>
+        <button class="preset-btn selected" onclick="applyPreset(11.0, 12.8, 0.25, 'LEAD_ACID_CONSERVATIVE')">12V (11-12.8V)</button>
         <button class="preset-btn" onclick="applyPreset(11.8, 14.7, 0.30, 'AGM')">12V AGM</button>
         <button class="preset-btn" onclick="applyPreset(11.8, 14.2, 0.30, 'GEL')">12V GEL</button>
         <button class="preset-btn" onclick="applyPreset(11.8, 14.8, 0.30, 'TUBULAR')">12V Tubular</button>
@@ -169,13 +177,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       </div>
 
       <label id="lbl-low-cut">Low Cutoff Voltage (V):</label>
-      <input type="number" step="0.05" id="cfg-lowcut" placeholder="e.g. 11.50">
+      <input type="number" step="0.05" id="cfg-lowcut" placeholder="e.g. 11.00">
 
       <label id="lbl-high-cut">High Cutoff Voltage (V):</label>
-      <input type="number" step="0.05" id="cfg-highcut" placeholder="e.g. 14.40">
+      <input type="number" step="0.05" id="cfg-highcut" placeholder="e.g. 12.80">
 
       <label id="lbl-hyst">Anti-Chatter Hysteresis (V):</label>
-      <input type="number" step="0.05" id="cfg-hyst" placeholder="e.g. 0.30">
+      <input type="number" step="0.05" id="cfg-hyst" placeholder="e.g. 0.25">
 
       <button class="btn primary" onclick="saveBatteryConfig()" id="btn-save-profile">Save Battery Profile</button>
       <div id="profile-status" style="margin-top:8px;font-size:12px;display:none;font-weight:bold;"></div>
@@ -216,7 +224,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
         <div>
           <label id="lbl-start-hr">Start Hour (0-23):</label>
-          <input type="number" id="cfg-start-hr" min="0" max="23" value="0">
+          <input type="number" id="cfg-start-hr" min="0" max="23" value="2">
         </div>
         <div>
           <label>Start Minute (0-59):</label>
@@ -224,7 +232,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         </div>
         <div>
           <label id="lbl-stop-hr">Stop Hour (0-23):</label>
-          <input type="number" id="cfg-stop-hr" min="0" max="23" value="6">
+          <input type="number" id="cfg-stop-hr" min="0" max="23" value="4">
         </div>
         <div>
           <label>Stop Minute (0-59):</label>
@@ -669,25 +677,65 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       update();
     }
 
+    let selectedChannel = 0;
+    let selectedBssid = '';
+
     async function scanWifi() {
       const list = document.getElementById('wifi-list');
       list.style.display = 'block';
-      list.innerHTML = '<span style="color:var(--muted);font-size:12px;">Scanning nearby networks...</span>';
-      try {
-        const res = await fetch('/api/scan_wifi');
-        const data = await res.json();
-        if (data.length === 0) { list.innerHTML = '<span style="color:var(--muted);font-size:12px;">No networks found</span>'; return; }
-        let html = '<div style="background:#0B0F19;border-radius:8px;padding:4px;max-height:140px;overflow-y:auto;border:1px solid #1E293B;">';
-        data.forEach(n => {
-          html += `<div style="padding:8px;cursor:pointer;border-bottom:1px solid #1E293B;font-size:12px;display:flex;justify-content:space-between;" onclick="selectSsid('${n.ssid}')"><span>📶 <b>${n.ssid}</b></span><span style="color:var(--muted);">${n.quality}% [${n.security}]</span></div>`;
-        });
-        html += '</div>';
-        list.innerHTML = html;
-      } catch(e) { list.innerHTML = '<span style="color:var(--red);font-size:12px;">Scan failed</span>'; }
+      list.innerHTML = '<span style="color:var(--muted);font-size:12px;">🔍 Scanning nearby 2.4GHz networks... Please wait</span>';
+
+      for (let attempt = 1; attempt <= 12; attempt++) {
+        try {
+          const isFirst = (attempt === 1);
+          const url = '/api/scan_wifi?' + (isFirst ? 'force=1&' : '') + 't=' + Date.now();
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+
+          if (res.status === 202 || data.status === 'scanning' || (Array.isArray(data) && data.length === 0 && attempt < 8)) {
+            list.innerHTML = '<span style="color:var(--muted);font-size:12px;">🔍 Probing radio channels (attempt ' + attempt + '/12)...</span>';
+            await new Promise(r => setTimeout(r, 900));
+            continue;
+          }
+
+          const nets = data.networks || (Array.isArray(data) ? data : []);
+          if (nets.length === 0) {
+            list.innerHTML = '<span style="color:var(--muted);font-size:12px;">No 2.4GHz networks found. Ensure router 2.4GHz is enabled or type SSID below.</span>';
+            return;
+          }
+
+          let html = '<div style="background:#0B0F19;border-radius:8px;padding:4px;max-height:180px;overflow-y:auto;border:1px solid #1E293B;">';
+          nets.forEach(n => {
+            const ch = n.channel || 0;
+            const bssid = n.bssid || '';
+            const rawSsid = n.ssid || '';
+            const safeSsid = rawSsid.replace(/'/g, "\\'");
+            html += `<div style="padding:8px;cursor:pointer;border-bottom:1px solid #1E293B;font-size:12px;display:flex;justify-content:space-between;align-items:center;" onclick="selectSsid('${safeSsid}', ${ch}, '${bssid}')">` +
+                    `<span>📶 <b>${rawSsid}</b> <span style="font-size:10px;color:var(--muted);">(Ch ${ch})</span></span>` +
+                    `<span style="color:var(--green);font-weight:bold;">${n.quality}% <span style="font-size:10px;color:var(--muted);">[${n.security}]</span></span>` +
+                    `</div>`;
+          });
+          html += '</div>';
+          list.innerHTML = html;
+          return;
+        } catch (err) {
+          list.innerHTML = '<span style="color:var(--muted);font-size:12px;">🔍 Probing radio channels (' + attempt + '/12)...</span>';
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+      list.innerHTML = '<span style="color:var(--amber);font-size:12px;">💡 Tip: You can type your Wi-Fi name and password directly below!</span>';
     }
 
-    function selectSsid(name) {
-      document.getElementById('ssid').value = name;
+    function selectSsid(name, ch, bssid) {
+      if (name.startsWith('[Hidden Network')) {
+        document.getElementById('ssid').value = '';
+        document.getElementById('ssid').placeholder = 'Enter Hidden SSID name';
+      } else {
+        document.getElementById('ssid').value = name;
+      }
+      selectedChannel = ch || 0;
+      selectedBssid = bssid || '';
       document.getElementById('wifi-list').style.display = 'none';
     }
 
@@ -699,8 +747,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       status.style.display = 'block';
       status.style.color = 'var(--green)';
       status.innerText = 'Connecting to ' + s + '... Charger will connect and register on LAN.';
+      let url = '/save?ssid=' + encodeURIComponent(s) + '&pass=' + encodeURIComponent(p);
+      if (selectedChannel > 0) url += '&channel=' + selectedChannel;
+      if (selectedBssid) url += '&bssid=' + encodeURIComponent(selectedBssid);
       try {
-        await fetch('/save?ssid=' + encodeURIComponent(s) + '&pass=' + encodeURIComponent(p), {method: 'POST'});
+        await fetch(url, {method: 'POST'});
       } catch(e) {}
     }
 
@@ -756,31 +807,40 @@ void HttpServer::setupRoutes() {
   _server.on("/", HTTP_GET, [this]() { handleRoot(); });
 
   // ── OS Connectivity & Captive Portal Probes ──
-  auto handleProbeCaptive = [this]() {
+  auto handleGenerate204 = [this]() {
     _lastInteractionTime = millis();
-    // Return 204 No Content so modern Android / iOS considers the Wi-Fi connection valid and NEVER auto-disconnects
     _server.sendHeader("Access-Control-Allow-Origin", "*");
-    _server.sendHeader("Connection", "close");
-    _server.send(204, "text/plain", "");
+    if (WiFi.status() != WL_CONNECTED || apMgr.isSetupMode()) {
+      _server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+      _server.send(302, "text/plain", "Captive Portal Redirect");
+    } else {
+      _server.send(204, "text/plain", "");
+    }
   };
-  _server.on("/generate_204", HTTP_GET, handleProbeCaptive);
-  _server.on("/gen_204", HTTP_GET, handleProbeCaptive);
-  _server.on("/connecttest.txt", HTTP_GET, handleProbeCaptive);
-  _server.on("/canonical.html", HTTP_GET, handleProbeCaptive);
 
-  // Microsoft NCSI probe
+  auto handleCaptiveRedirect = [this]() {
+    _lastInteractionTime = millis();
+    _server.sendHeader("Access-Control-Allow-Origin", "*");
+    _server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+    _server.send(302, "text/plain", "Captive Portal Redirect");
+  };
+
+  _server.on("/generate_204", HTTP_GET, handleGenerate204);
+  _server.on("/gen_204", HTTP_GET, handleGenerate204);
+  _server.on("/connecttest.txt", HTTP_GET, [this]() {
+    _server.sendHeader("Access-Control-Allow-Origin", "*");
+    _server.send(200, "text/plain", "Microsoft Connect Test");
+  });
+  _server.on("/canonical.html", HTTP_GET, handleCaptiveRedirect);
   _server.on("/ncsi.txt", HTTP_GET, [this]() {
     _server.sendHeader("Access-Control-Allow-Origin", "*");
     _server.send(200, "text/plain", "Microsoft NCSI");
   });
-
-  // Apple Captive probe
-  auto handleAppleSuccess = [this]() {
+  _server.on("/hotspot-detect.html", HTTP_GET, handleCaptiveRedirect);
+  _server.on("/library/test/success.html", HTTP_GET, [this]() {
     _server.sendHeader("Access-Control-Allow-Origin", "*");
     _server.send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
-  };
-  _server.on("/hotspot-detect.html", HTTP_GET, handleAppleSuccess);
-  _server.on("/library/test/success.html", HTTP_GET, handleAppleSuccess);
+  });
 
   // ── API Endpoints ──
   _server.on("/api/v1/health", HTTP_GET, [this]() { handleHealth(); });
@@ -802,8 +862,22 @@ void HttpServer::setupRoutes() {
   
   _server.on("/api/control", HTTP_GET, [this]() { handleControlGet(); });
 
-  _server.on("/api/timer", HTTP_GET, [this]() {
-    int mins = _server.hasArg("minutes") ? _server.arg("minutes").toInt() : 0;
+  auto handleTimerRequest = [this]() {
+    _lastInteractionTime = millis();
+    int mins = 0;
+    if (_server.hasArg("minutes")) {
+      mins = _server.arg("minutes").toInt();
+    } else if (_server.hasArg("timer_minutes")) {
+      mins = _server.arg("timer_minutes").toInt();
+    } else if (_server.hasArg("plain")) {
+      String body = _server.arg("plain");
+      int idx = body.indexOf("\"minutes\":");
+      if (idx == -1) idx = body.indexOf("\"timer_minutes\":");
+      if (idx != -1) {
+        int colon = body.indexOf(":", idx);
+        if (colon != -1) mins = body.substring(colon + 1).toInt();
+      }
+    }
     if (mins > 0) {
       chargingCtrl.setTimer(mins);
     } else {
@@ -811,18 +885,11 @@ void HttpServer::setupRoutes() {
     }
     _server.sendHeader("Access-Control-Allow-Origin", "*");
     _server.send(200, "application/json", "{\"success\":true,\"timer_minutes\":" + String(mins) + "}");
-  });
-
-  _server.on("/api/v1/timer", HTTP_POST, [this]() {
-    int mins = _server.hasArg("minutes") ? _server.arg("minutes").toInt() : 0;
-    if (mins > 0) {
-      chargingCtrl.setTimer(mins);
-    } else {
-      chargingCtrl.cancelTimer();
-    }
-    _server.sendHeader("Access-Control-Allow-Origin", "*");
-    _server.send(200, "application/json", "{\"success\":true,\"timer_minutes\":" + String(mins) + "}");
-  });
+  };
+  _server.on("/api/timer", HTTP_GET, handleTimerRequest);
+  _server.on("/api/timer", HTTP_POST, handleTimerRequest);
+  _server.on("/api/v1/timer", HTTP_GET, handleTimerRequest);
+  _server.on("/api/v1/timer", HTTP_POST, handleTimerRequest);
 
   _server.on("/api/v1/relay", HTTP_POST, [this]() { handleRelayPost(); });
   _server.on("/api/relay", HTTP_POST, [this]() { handleRelayPost(); });
@@ -893,10 +960,16 @@ void HttpServer::setupRoutes() {
 
   _server.on("/api/scan_wifi", HTTP_GET, [this]() { handleScanWifi(); });
   _server.on("/api/v1/wifi/scan", HTTP_GET, [this]() { handleScanWifi(); });
+  _server.on("/api/wifi/scan", HTTP_GET, [this]() { handleScanWifi(); });
+  _server.on("/scan_wifi", HTTP_GET, [this]() { handleScanWifi(); });
+  _server.on("/scan", HTTP_GET, [this]() { handleScanWifi(); });
+
   _server.on("/save", HTTP_POST, [this]() { handleSaveCredentials(); });
+  _server.on("/save", HTTP_GET, [this]() { handleSaveCredentials(); });
   _server.on("/api/save", HTTP_POST, [this]() { handleSaveCredentials(); });
   _server.on("/api/save_wifi", HTTP_POST, [this]() { handleSaveCredentials(); });
   _server.on("/api/v1/wifi/save", HTTP_POST, [this]() { handleSaveCredentials(); });
+  _server.on("/api/wifi/save", HTTP_POST, [this]() { handleSaveCredentials(); });
 
   auto handleWeatherEndpoint = [this]() {
     _server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -993,167 +1066,176 @@ void HttpServer::handleStatus() {
   bool relayOn = relayCtrl.isOn();
   unsigned long nowSec = millis() / 1000;
 
-  String json = "{";
-  // Telemetry node
-  json += "\"telemetry\":{";
-  json += "\"battery_voltage\":"         + String(volts, 2) + ",";
-  json += "\"batteryVoltage\":"          + String(volts, 2) + ",";
-  json += "\"voltage\":"                 + String(volts, 2) + ",";
-  json += "\"raw_adc\":"                 + String(voltageSensor.getRawAdc()) + ",";
-  json += "\"sta_ssid\":\""              + wifiMgr.getSsid() + "\",";
-  json += "\"sta_connected\":"           + String(wifiMgr.isConnected() ? "true" : "false") + ",";
+  _server.sendHeader("Access-Control-Allow-Origin", "*");
+  _server.sendHeader("Cache-Control", "no-cache");
+  _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server.send(200, "application/json", "");
+
+  // Chunk 1: Telemetry node (~750 bytes)
+  String chunk;
+  chunk.reserve(1024);
+  chunk = "{\"telemetry\":{";
+  chunk += "\"battery_voltage\":"         + String(volts, 2) + ",";
+  chunk += "\"batteryVoltage\":"          + String(volts, 2) + ",";
+  chunk += "\"voltage\":"                 + String(volts, 2) + ",";
+  chunk += "\"raw_adc\":"                 + String(voltageSensor.getRawAdc()) + ",";
+  chunk += "\"sta_ssid\":\""              + wifiMgr.getSsid() + "\",";
+  chunk += "\"sta_connected\":"           + String(wifiMgr.isConnected() ? "true" : "false") + ",";
   String sStatus = voltageSensor.isDisconnected() ? "STANDBY" : 
                    (voltageSensor.isProfileMismatch() ? "PROFILE_MISMATCH" :
                    (voltageSensor.isOverVoltage() ? "WARNING" : "OK"));
-  json += "\"sensor_disconnected\":"     + String(voltageSensor.isDisconnected() ? "true" : "false") + ",";
-  json += "\"is_sensor_disconnected\":"  + String(voltageSensor.isDisconnected() ? "true" : "false") + ",";
-  json += "\"isSensorDisconnected\":"    + String(voltageSensor.isDisconnected() ? "true" : "false") + ",";
-  json += "\"sensor_status\":\""         + sStatus + "\",";
-  json += "\"sensorStatus\":\""          + sStatus + "\",";
-  json += "\"is_profile_mismatch\":"     + String(voltageSensor.isProfileMismatch() ? "true" : "false") + ",";
-  json += "\"isProfileMismatch\":"       + String(voltageSensor.isProfileMismatch() ? "true" : "false") + ",";
-  json += "\"relay_state\":"             + String(relayOn ? "true" : "false") + ",";
-  json += "\"charging_state\":\""        + String(chargingCtrl.getStateString()) + "\",";
-  json += "\"charging_mode\":\""         + String(operatingModeToString((OperatingMode)cfg.chargingMode)) + "\",";
-  json += "\"operating_mode\":\""        + String(operatingModeToString((OperatingMode)cfg.chargingMode)) + "\",";
-  json += "\"auto_mode\":"               + String(cfg.autoMode ? "true" : "false") + ",";
-  json += "\"solar_backup\":"            + String(cfg.solarBackupEnabled ? "true" : "false") + ",";
-  json += "\"timer_active\":"            + String(chargingCtrl.isTimerActive() ? "true" : "false") + ",";
-  json += "\"timer_remaining_seconds\":" + String(chargingCtrl.getTimerRemainingSeconds()) + ",";
-  json += "\"schedule_compensating\":"        + String(chargingCtrl.isScheduleCompensating() ? "true" : "false") + ",";
-  json += "\"scheduleCompensating\":"         + String(chargingCtrl.isScheduleCompensating() ? "true" : "false") + ",";
-  json += "\"schedule_remaining_seconds\":"    + String(chargingCtrl.getScheduleRemainingSeconds()) + ",";
-  json += "\"scheduleRemainingSeconds\":"     + String(chargingCtrl.getScheduleRemainingSeconds()) + ",";
-  json += "\"schedule_today_completed\":"     + String(chargingCtrl.isDailyScheduleCompleted() ? "true" : "false") + ",";
-  json += "\"scheduleTodayCompleted\":"       + String(chargingCtrl.isDailyScheduleCompleted() ? "true" : "false") + ",";
-  json += "\"schedule_today_date\":"          + String(chargingCtrl.getScheduleDateCode()) + ",";
-  json += "\"scheduleTodayDate\":"            + String(chargingCtrl.getScheduleDateCode()) + ",";
-  json += "\"schedule_today_status\":\""      + String(chargingCtrl.getDailyScheduleStatus()) + "\",";
-  json += "\"scheduleTodayStatus\":\""        + String(chargingCtrl.getDailyScheduleStatus()) + "\",";
-  json += "\"schedule_charged_seconds\":"     + String(chargingCtrl.getDailyScheduleChargedSecs()) + ",";
-  json += "\"scheduleChargedSecs\":"          + String(chargingCtrl.getDailyScheduleChargedSecs()) + ",";
-  json += "\"schedule_total_seconds\":"       + String(chargingCtrl.getScheduleTotalSeconds()) + ",";
-  json += "\"scheduleTotalSecs\":"            + String(chargingCtrl.getScheduleTotalSeconds()) + ",";
-  json += "\"manual_lock_secs\":"        + String(relayCtrl.getManualLockRemainingSecs()) + ",";
-  json += "\"uptime_secs\":"             + String(nowSec) + ",";
-  json += "\"wifi_rssi\":"               + String(wifiMgr.getRssi()) + ",";
-  json += "\"device_ip\":\""             + (wifiMgr.isConnected() ? wifiMgr.getStaIpString() : apMgr.getApIpString()) + "\",";
-  json += "\"has_fault\":"               + String((voltageSensor.isOverVoltage() || relayCtrl.isChatterFault()) ? "true" : "false") + ",";
-  json += "\"cloud_cover\":"             + String(weatherMgr.getCloudCover()) + ",";
-  json += "\"weather_code\":"            + String(weatherMgr.getWeatherCode()) + ",";
-  json += "\"weather_status\":\""        + String(weatherMgr.getWeatherStatusString()) + "\",";
-  json += "\"weatherStatus\":\""         + String(weatherMgr.getWeatherStatusString()) + "\",";
-  json += "\"weather_manual_override\":" + String(weatherMgr.isManualOverrideActive() ? "true" : "false") + ",";
-  json += "\"weatherManualOverride\":"   + String(weatherMgr.isManualOverrideActive() ? "true" : "false") + ",";
-  json += "\"weather_cloudy\":"          + String(weatherMgr.isCloudy() ? "true" : "false") + ",";
-  json += "\"solar_cloudy\":"            + String(weatherMgr.isCloudy() ? "true" : "false") + ",";
-  json += "\"relay_diagnostic\":\""      + String(relayCtrl.getDiagnosticStatus()) + "\",";
-  json += "\"is_setup_mode\":"          + String(apMgr.isSetupMode() ? "true" : "false") + ",";
-  json += "\"isSetupMode\":"            + String(apMgr.isSetupMode() ? "true" : "false") + ",";
-  json += "\"ap_ssid\":\""              + apMgr.getApSsid() + "\",";
-  json += "\"apSsid\":\""                + apMgr.getApSsid() + "\"},";
+  chunk += "\"sensor_disconnected\":"     + String(voltageSensor.isDisconnected() ? "true" : "false") + ",";
+  chunk += "\"is_sensor_disconnected\":"  + String(voltageSensor.isDisconnected() ? "true" : "false") + ",";
+  chunk += "\"isSensorDisconnected\":"    + String(voltageSensor.isDisconnected() ? "true" : "false") + ",";
+  chunk += "\"sensor_status\":\""         + sStatus + "\",";
+  chunk += "\"sensorStatus\":\""          + sStatus + "\",";
+  chunk += "\"is_profile_mismatch\":"     + String(voltageSensor.isProfileMismatch() ? "true" : "false") + ",";
+  chunk += "\"isProfileMismatch\":"       + String(voltageSensor.isProfileMismatch() ? "true" : "false") + ",";
+  chunk += "\"relay_state\":"             + String(relayOn ? "true" : "false") + ",";
+  chunk += "\"charging_state\":\""        + String(chargingCtrl.getStateString()) + "\",";
+  chunk += "\"charging_mode\":\""         + String(operatingModeToString((OperatingMode)cfg.chargingMode)) + "\",";
+  chunk += "\"operating_mode\":\""        + String(operatingModeToString((OperatingMode)cfg.chargingMode)) + "\",";
+  chunk += "\"auto_mode\":"               + String(cfg.autoMode ? "true" : "false") + ",";
+  chunk += "\"solar_backup\":"            + String(cfg.solarBackupEnabled ? "true" : "false") + ",";
+  chunk += "\"timer_active\":"            + String(chargingCtrl.isTimerActive() ? "true" : "false") + ",";
+  chunk += "\"timer_remaining_seconds\":" + String(chargingCtrl.getTimerRemainingSeconds()) + ",";
+  chunk += "\"schedule_compensating\":"        + String(chargingCtrl.isScheduleCompensating() ? "true" : "false") + ",";
+  chunk += "\"scheduleCompensating\":"         + String(chargingCtrl.isScheduleCompensating() ? "true" : "false") + ",";
+  chunk += "\"schedule_remaining_seconds\":"    + String(chargingCtrl.getScheduleRemainingSeconds()) + ",";
+  chunk += "\"scheduleRemainingSeconds\":"     + String(chargingCtrl.getScheduleRemainingSeconds()) + ",";
+  chunk += "\"schedule_today_completed\":"     + String(chargingCtrl.isDailyScheduleCompleted() ? "true" : "false") + ",";
+  chunk += "\"scheduleTodayCompleted\":"       + String(chargingCtrl.isDailyScheduleCompleted() ? "true" : "false") + ",";
+  chunk += "\"schedule_today_date\":"          + String(chargingCtrl.getScheduleDateCode()) + ",";
+  chunk += "\"scheduleTodayDate\":"            + String(chargingCtrl.getScheduleDateCode()) + ",";
+  chunk += "\"schedule_today_status\":\""      + String(chargingCtrl.getDailyScheduleStatus()) + "\",";
+  chunk += "\"scheduleTodayStatus\":\""        + String(chargingCtrl.getDailyScheduleStatus()) + "\",";
+  chunk += "\"schedule_charged_seconds\":"     + String(chargingCtrl.getDailyScheduleChargedSecs()) + ",";
+  chunk += "\"scheduleChargedSecs\":"          + String(chargingCtrl.getDailyScheduleChargedSecs()) + ",";
+  chunk += "\"schedule_total_seconds\":"       + String(chargingCtrl.getScheduleTotalSeconds()) + ",";
+  chunk += "\"scheduleTotalSecs\":"            + String(chargingCtrl.getScheduleTotalSeconds()) + ",";
+  chunk += "\"manual_lock_secs\":"        + String(relayCtrl.getManualLockRemainingSecs()) + ",";
+  chunk += "\"uptime_secs\":"             + String(nowSec) + ",";
+  chunk += "\"wifi_rssi\":"               + String(wifiMgr.getRssi()) + ",";
+  chunk += "\"device_ip\":\""             + (wifiMgr.isConnected() ? wifiMgr.getStaIpString() : apMgr.getApIpString()) + "\",";
+  chunk += "\"has_fault\":"               + String((voltageSensor.isOverVoltage() || relayCtrl.isChatterFault()) ? "true" : "false") + ",";
+  chunk += "\"cloud_cover\":"             + String(weatherMgr.getCloudCover()) + ",";
+  chunk += "\"weather_code\":"            + String(weatherMgr.getWeatherCode()) + ",";
+  chunk += "\"weather_status\":\""        + String(weatherMgr.getWeatherStatusString()) + "\",";
+  chunk += "\"weatherStatus\":\""         + String(weatherMgr.getWeatherStatusString()) + "\",";
+  chunk += "\"weather_manual_override\":" + String(weatherMgr.isManualOverrideActive() ? "true" : "false") + ",";
+  chunk += "\"weatherManualOverride\":"   + String(weatherMgr.isManualOverrideActive() ? "true" : "false") + ",";
+  chunk += "\"weather_cloudy\":"          + String(weatherMgr.isCloudy() ? "true" : "false") + ",";
+  chunk += "\"solar_cloudy\":"            + String(weatherMgr.isCloudy() ? "true" : "false") + ",";
+  chunk += "\"relay_diagnostic\":\""      + String(relayCtrl.getDiagnosticStatus()) + "\",";
+  chunk += "\"is_setup_mode\":"          + String(apMgr.isSetupMode() ? "true" : "false") + ",";
+  chunk += "\"isSetupMode\":"            + String(apMgr.isSetupMode() ? "true" : "false") + ",";
+  chunk += "\"ap_ssid\":\""              + apMgr.getApSsid() + "\",";
+  chunk += "\"apSsid\":\""                + apMgr.getApSsid() + "\"}";
+  _server.sendContent(chunk);
 
-  // Stats node
-  json += "\"stats\":{";
-  json += "\"current_session_seconds\":" + String(billingEstimator.getCurrentSessionSeconds()) + ",";
-  json += "\"today_seconds\":"           + String(billingEstimator.getTodaySeconds()) + ",";
-  json += "\"total_seconds\":"           + String(billingEstimator.getTotalSeconds()) + ",";
-  json += "\"today_estimated_kwh\":"     + String(billingEstimator.getTodayKwh(), 4) + ",";
-  json += "\"today_estimated_bdt\":"     + String(billingEstimator.getTodayCostBdt(), 2) + ",";
-  json += "\"total_estimated_kwh\":"     + String(billingEstimator.getTotalKwh(), 4) + ",";
-  json += "\"total_estimated_bdt\":"     + String(billingEstimator.getTotalCostBdt(), 2) + ",";
-  json += "\"auto_kwh\":"                + String(billingEstimator.getAutoKwh(), 4) + ",";
-  json += "\"auto_bdt\":"                + String(billingEstimator.getAutoCostBdt(), 2) + ",";
-  json += "\"autoKwh\":"                 + String(billingEstimator.getAutoKwh(), 4) + ",";
-  json += "\"autoCostBdt\":"             + String(billingEstimator.getAutoCostBdt(), 2) + ",";
-  json += "\"manual_kwh\":"              + String(billingEstimator.getManualKwh(), 4) + ",";
-  json += "\"manual_bdt\":"              + String(billingEstimator.getManualCostBdt(), 2) + ",";
-  json += "\"manualKwh\":"               + String(billingEstimator.getManualKwh(), 4) + ",";
-  json += "\"manualCostBdt\":"           + String(billingEstimator.getManualCostBdt(), 2) + ",";
-  json += "\"schedule_kwh\":"            + String(billingEstimator.getScheduleKwh(), 4) + ",";
-  json += "\"schedule_bdt\":"            + String(billingEstimator.getScheduleCostBdt(), 2) + ",";
-  json += "\"scheduleKwh\":"             + String(billingEstimator.getScheduleKwh(), 4) + ",";
-  json += "\"scheduleCostBdt\":"         + String(billingEstimator.getScheduleCostBdt(), 2) + ",";
-  json += "\"timer_kwh\":"               + String(billingEstimator.getTimerKwh(), 4) + ",";
-  json += "\"timer_bdt\":"               + String(billingEstimator.getTimerCostBdt(), 2) + ",";
-  json += "\"timerKwh\":"                + String(billingEstimator.getTimerKwh(), 4) + ",";
-  json += "\"timerCostBdt\":"            + String(billingEstimator.getTimerCostBdt(), 2) + ",";
-  json += "\"solar_kwh\":"               + String(billingEstimator.getSolarKwh(), 4) + ",";
-  json += "\"solar_bdt\":"               + String(billingEstimator.getSolarCostBdt(), 2) + ",";
-  json += "\"solarKwh\":"                + String(billingEstimator.getSolarKwh(), 4) + ",";
-  json += "\"solarCostBdt\":"            + String(billingEstimator.getSolarCostBdt(), 2) + ",";
-  json += "\"daily_bills_count\":"       + String(billingEstimator.getDailyBillCount()) + "},";
+  // Chunk 2: Stats node (~600 bytes)
+  chunk = ",\"stats\":{";
+  chunk += "\"current_session_seconds\":" + String(billingEstimator.getCurrentSessionSeconds()) + ",";
+  chunk += "\"today_seconds\":"           + String(billingEstimator.getTodaySeconds()) + ",";
+  chunk += "\"total_seconds\":"           + String(billingEstimator.getTotalSeconds()) + ",";
+  chunk += "\"today_estimated_kwh\":"     + String(billingEstimator.getTodayKwh(), 4) + ",";
+  chunk += "\"today_estimated_bdt\":"     + String(billingEstimator.getTodayCostBdt(), 2) + ",";
+  chunk += "\"total_estimated_kwh\":"     + String(billingEstimator.getTotalKwh(), 4) + ",";
+  chunk += "\"total_estimated_bdt\":"     + String(billingEstimator.getTotalCostBdt(), 2) + ",";
+  chunk += "\"auto_kwh\":"                + String(billingEstimator.getAutoKwh(), 4) + ",";
+  chunk += "\"auto_bdt\":"                + String(billingEstimator.getAutoCostBdt(), 2) + ",";
+  chunk += "\"autoKwh\":"                 + String(billingEstimator.getAutoKwh(), 4) + ",";
+  chunk += "\"autoCostBdt\":"             + String(billingEstimator.getAutoCostBdt(), 2) + ",";
+  chunk += "\"manual_kwh\":"              + String(billingEstimator.getManualKwh(), 4) + ",";
+  chunk += "\"manual_bdt\":"              + String(billingEstimator.getManualCostBdt(), 2) + ",";
+  chunk += "\"manualKwh\":"               + String(billingEstimator.getManualKwh(), 4) + ",";
+  chunk += "\"manualCostBdt\":"           + String(billingEstimator.getManualCostBdt(), 2) + ",";
+  chunk += "\"schedule_kwh\":"            + String(billingEstimator.getScheduleKwh(), 4) + ",";
+  chunk += "\"schedule_bdt\":"            + String(billingEstimator.getScheduleCostBdt(), 2) + ",";
+  chunk += "\"scheduleKwh\":"             + String(billingEstimator.getScheduleKwh(), 4) + ",";
+  chunk += "\"scheduleCostBdt\":"         + String(billingEstimator.getScheduleCostBdt(), 2) + ",";
+  chunk += "\"timer_kwh\":"               + String(billingEstimator.getTimerKwh(), 4) + ",";
+  chunk += "\"timer_bdt\":"               + String(billingEstimator.getTimerCostBdt(), 2) + ",";
+  chunk += "\"timerKwh\":"                + String(billingEstimator.getTimerKwh(), 4) + ",";
+  chunk += "\"timerCostBdt\":"            + String(billingEstimator.getTimerCostBdt(), 2) + ",";
+  chunk += "\"solar_kwh\":"               + String(billingEstimator.getSolarKwh(), 4) + ",";
+  chunk += "\"solar_bdt\":"               + String(billingEstimator.getSolarCostBdt(), 2) + ",";
+  chunk += "\"solarKwh\":"                + String(billingEstimator.getSolarKwh(), 4) + ",";
+  chunk += "\"solarCostBdt\":"            + String(billingEstimator.getSolarCostBdt(), 2) + ",";
+  chunk += "\"daily_bills_count\":"       + String(billingEstimator.getDailyBillCount()) + "}";
+  _server.sendContent(chunk);
 
-  // Config node
-  json += "\"config\":{";
-  json += "\"battery_profile\":"         + String(cfg.batteryProfile) + ",";
-  json += "\"battery_profile_name\":\""  + String(batteryProfileToString((BatteryProfileType)cfg.batteryProfile)) + "\",";
-  json += "\"batteryProfile\":\""        + String(batteryProfileToString((BatteryProfileType)cfg.batteryProfile)) + "\",";
-  json += "\"batteryProfileName\":\""    + String(batteryProfileToString((BatteryProfileType)cfg.batteryProfile)) + "\",";
-  json += "\"batteryProfileId\":"        + String(cfg.batteryProfile) + ",";
-  json += "\"low_cut\":"                 + String(cfg.lowCutVoltage, 2) + ",";
-  json += "\"lowCut\":"                  + String(cfg.lowCutVoltage, 2) + ",";
-  json += "\"high_cut\":"                + String(cfg.highCutVoltage, 2) + ",";
-  json += "\"highCut\":"                 + String(cfg.highCutVoltage, 2) + ",";
-  json += "\"hysteresis\":"              + String(cfg.hysteresisVoltage, 2) + ",";
-  json += "\"charger_watt\":"            + String(cfg.chargerWatt, 0) + ",";
-  json += "\"charger_amps\":"            + String(cfg.chargerAmps, 1) + ",";
-  json += "\"kwh_rate_bdt\":"            + String(cfg.electricityRate, 1) + ",";
-  json += "\"voltage_calibration\":"     + String(cfg.voltageCalibration, 3) + ",";
-  json += "\"voltage_offset\":"          + String(cfg.voltageOffset, 2) + ",";
-  json += "\"charge_start_hour\":"       + String(cfg.chargeStartHour) + ",";
-  json += "\"chargeStartHour\":"         + String(cfg.chargeStartHour) + ",";
-  json += "\"start_hour\":"              + String(cfg.chargeStartHour) + ",";
-  json += "\"startHour\":"               + String(cfg.chargeStartHour) + ",";
-  json += "\"charge_start_minute\":"     + String(cfg.chargeStartMinute) + ",";
-  json += "\"chargeStartMinute\":"       + String(cfg.chargeStartMinute) + ",";
-  json += "\"start_minute\":"            + String(cfg.chargeStartMinute) + ",";
-  json += "\"startMinute\":"             + String(cfg.chargeStartMinute) + ",";
-  json += "\"charge_stop_hour\":"        + String(cfg.chargeStopHour) + ",";
-  json += "\"chargeStopHour\":"          + String(cfg.chargeStopHour) + ",";
-  json += "\"stop_hour\":"               + String(cfg.chargeStopHour) + ",";
-  json += "\"stopHour\":"                + String(cfg.chargeStopHour) + ",";
-  json += "\"charge_stop_minute\":"      + String(cfg.chargeStopMinute) + ",";
-  json += "\"chargeStopMinute\":"        + String(cfg.chargeStopMinute) + ",";
-  json += "\"stop_minute\":"             + String(cfg.chargeStopMinute) + ",";
-  json += "\"stopMinute\":"              + String(cfg.chargeStopMinute) + ",";
-  json += "\"schedule_enabled\":"        + String(cfg.scheduleEnabled ? "true" : "false") + ",";
-  json += "\"scheduleEnabled\":"         + String(cfg.scheduleEnabled ? "true" : "false") + ",";
-  json += "\"schedule_days\":"           + String(cfg.scheduleDaysBitmask == 0 ? 127 : cfg.scheduleDaysBitmask) + ",";
-  json += "\"scheduleDays\":"            + String(cfg.scheduleDaysBitmask == 0 ? 127 : cfg.scheduleDaysBitmask) + ",";
-  json += "\"scheduleDaysBitmask\":"     + String(cfg.scheduleDaysBitmask == 0 ? 127 : cfg.scheduleDaysBitmask) + ",";
-  json += "\"auto_mode\":"               + String(cfg.autoMode ? "true" : "false") + ",";
-  json += "\"autoMode\":"                + String(cfg.autoMode ? "true" : "false") + ",";
-  json += "\"solar_backup\":"            + String(cfg.solarBackupEnabled ? "true" : "false") + ",";
-  json += "\"solarBackup\":"             + String(cfg.solarBackupEnabled ? "true" : "false") + ",";
-  json += "\"ap_ssid\":\""               + String(cfg.apSsid) + "\",";
-  json += "\"device_name\":\""           + String(cfg.deviceName) + "\",";
-  json += "\"weather_lat\":"             + String(cfg.weatherLat, 4) + ",";
-  json += "\"weather_lon\":"             + String(cfg.weatherLon, 4) + ",";
-  json += "\"weather_sync_enabled\":"    + String(cfg.weatherSyncEnabled ? "true" : "false") + ",";
-  json += "\"timezone_offset\":"         + String(cfg.timezoneOffsetHours) + ",";
-  json += "\"updatedAt\":"               + String(cfg.updatedAt) + ",";
-  json += "\"updated_at\":"              + String(cfg.updatedAt) + ",";
-  json += "\"epoch\":"                   + String(timeMgr.getEpoch()) + ",";
-  json += "\"time_synced\":"             + String(timeMgr.isSynced() ? "true" : "false") + ",";
-  json += "\"formatted_time\":\""        + timeMgr.getFormattedTime() + "\",";
-  json += "\"formatted_time_12\":\""     + timeMgr.getFormattedTime12() + "\",";
-  json += "\"relay_active_low\":"        + String(cfg.relayActiveLow ? "true" : "false") + ",";
-  json += "\"relayActiveLow\":"         + String(cfg.relayActiveLow ? "true" : "false") + ",";
-  json += "\"device_id\":\""             + String(cfg.deviceId) + "\"},";
+  // Chunk 3: Config node (~850 bytes)
+  chunk = ",\"config\":{";
+  chunk += "\"battery_profile\":"         + String(cfg.batteryProfile) + ",";
+  chunk += "\"battery_profile_name\":\""  + String(batteryProfileToString((BatteryProfileType)cfg.batteryProfile)) + "\",";
+  chunk += "\"batteryProfile\":\""        + String(batteryProfileToString((BatteryProfileType)cfg.batteryProfile)) + "\",";
+  chunk += "\"batteryProfileName\":\""    + String(batteryProfileToString((BatteryProfileType)cfg.batteryProfile)) + "\",";
+  chunk += "\"batteryProfileId\":"        + String(cfg.batteryProfile) + ",";
+  chunk += "\"low_cut\":"                 + String(cfg.lowCutVoltage, 2) + ",";
+  chunk += "\"lowCut\":"                  + String(cfg.lowCutVoltage, 2) + ",";
+  chunk += "\"high_cut\":"                + String(cfg.highCutVoltage, 2) + ",";
+  chunk += "\"highCut\":"                 + String(cfg.highCutVoltage, 2) + ",";
+  chunk += "\"hysteresis\":"              + String(cfg.hysteresisVoltage, 2) + ",";
+  chunk += "\"charger_watt\":"            + String(cfg.chargerWatt, 0) + ",";
+  chunk += "\"charger_amps\":"            + String(cfg.chargerAmps, 1) + ",";
+  chunk += "\"kwh_rate_bdt\":"            + String(cfg.electricityRate, 1) + ",";
+  chunk += "\"voltage_calibration\":"     + String(cfg.voltageCalibration, 3) + ",";
+  chunk += "\"voltage_offset\":"          + String(cfg.voltageOffset, 2) + ",";
+  chunk += "\"charge_start_hour\":"       + String(cfg.chargeStartHour) + ",";
+  chunk += "\"chargeStartHour\":"         + String(cfg.chargeStartHour) + ",";
+  chunk += "\"start_hour\":"              + String(cfg.chargeStartHour) + ",";
+  chunk += "\"startHour\":"               + String(cfg.chargeStartHour) + ",";
+  chunk += "\"charge_start_minute\":"     + String(cfg.chargeStartMinute) + ",";
+  chunk += "\"chargeStartMinute\":"       + String(cfg.chargeStartMinute) + ",";
+  chunk += "\"start_minute\":"            + String(cfg.chargeStartMinute) + ",";
+  chunk += "\"startMinute\":"             + String(cfg.chargeStartMinute) + ",";
+  chunk += "\"charge_stop_hour\":"        + String(cfg.chargeStopHour) + ",";
+  chunk += "\"chargeStopHour\":"          + String(cfg.chargeStopHour) + ",";
+  chunk += "\"stop_hour\":"               + String(cfg.chargeStopHour) + ",";
+  chunk += "\"stopHour\":"                + String(cfg.chargeStopHour) + ",";
+  chunk += "\"charge_stop_minute\":"      + String(cfg.chargeStopMinute) + ",";
+  chunk += "\"chargeStopMinute\":"        + String(cfg.chargeStopMinute) + ",";
+  chunk += "\"stop_minute\":"             + String(cfg.chargeStopMinute) + ",";
+  chunk += "\"stopMinute\":"              + String(cfg.chargeStopMinute) + ",";
+  chunk += "\"schedule_enabled\":"        + String(cfg.scheduleEnabled ? "true" : "false") + ",";
+  chunk += "\"scheduleEnabled\":"         + String(cfg.scheduleEnabled ? "true" : "false") + ",";
+  chunk += "\"schedule_days\":"           + String(cfg.scheduleDaysBitmask == 0 ? 127 : cfg.scheduleDaysBitmask) + ",";
+  chunk += "\"scheduleDays\":"            + String(cfg.scheduleDaysBitmask == 0 ? 127 : cfg.scheduleDaysBitmask) + ",";
+  chunk += "\"scheduleDaysBitmask\":"     + String(cfg.scheduleDaysBitmask == 0 ? 127 : cfg.scheduleDaysBitmask) + ",";
+  chunk += "\"auto_mode\":"               + String(cfg.autoMode ? "true" : "false") + ",";
+  chunk += "\"autoMode\":"                + String(cfg.autoMode ? "true" : "false") + ",";
+  chunk += "\"solar_backup\":"            + String(cfg.solarBackupEnabled ? "true" : "false") + ",";
+  chunk += "\"solarBackup\":"             + String(cfg.solarBackupEnabled ? "true" : "false") + ",";
+  chunk += "\"ap_ssid\":\""               + String(cfg.apSsid) + "\",";
+  chunk += "\"device_name\":\""           + String(cfg.deviceName) + "\",";
+  chunk += "\"weather_lat\":"             + String(cfg.weatherLat, 4) + ",";
+  chunk += "\"weather_lon\":"             + String(cfg.weatherLon, 4) + ",";
+  chunk += "\"weather_sync_enabled\":"    + String(cfg.weatherSyncEnabled ? "true" : "false") + ",";
+  chunk += "\"timezone_offset\":"         + String(cfg.timezoneOffsetHours) + ",";
+  chunk += "\"updatedAt\":"               + String(cfg.updatedAt) + ",";
+  chunk += "\"updated_at\":"              + String(cfg.updatedAt) + ",";
+  chunk += "\"epoch\":"                   + String(timeMgr.getEpoch()) + ",";
+  chunk += "\"time_synced\":"             + String(timeMgr.isSynced() ? "true" : "false") + ",";
+  chunk += "\"formatted_time\":\""        + timeMgr.getFormattedTime() + "\",";
+  chunk += "\"formatted_time_12\":\""     + timeMgr.getFormattedTime12() + "\",";
+  chunk += "\"relay_active_low\":"        + String(cfg.relayActiveLow ? "true" : "false") + ",";
+  chunk += "\"relayActiveLow\":"         + String(cfg.relayActiveLow ? "true" : "false") + ",";
+  chunk += "\"device_id\":\""             + String(cfg.deviceId) + "\",";
+  chunk += "\"deviceId\":\""              + String(cfg.deviceId) + "\"}";
+  _server.sendContent(chunk);
 
-  // Health node
-  json += "\"health\":{";
-  json += "\"status\":\"ok\",";
-  json += "\"uptime_seconds\":"          + String(nowSec) + ",";
-  json += "\"wifi_rssi\":"               + String(wifiMgr.getRssi()) + ",";
-  json += "\"free_heap\":"               + String(ESP.getFreeHeap()) + ",";
-  json += "\"firmware_version\":\"" FIRMWARE_VERSION "\"}}";
-
-  _server.sendHeader("Access-Control-Allow-Origin", "*");
-  _server.sendHeader("Cache-Control", "no-cache");
-  _server.sendHeader("Connection", "close");
-  _server.send(200, "application/json", json);
+  // Chunk 4: Health node and closing (~250 bytes)
+  chunk = ",\"health\":{";
+  chunk += "\"status\":\"ok\",";
+  chunk += "\"deviceId\":\""              + String(cfg.deviceId) + "\",";
+  chunk += "\"device_id\":\""             + String(cfg.deviceId) + "\",";
+  chunk += "\"uptime_seconds\":"          + String(nowSec) + ",";
+  chunk += "\"wifi_rssi\":"               + String(wifiMgr.getRssi()) + ",";
+  chunk += "\"free_heap\":"               + String(ESP.getFreeHeap()) + ",";
+  chunk += "\"firmware_version\":\"" FIRMWARE_VERSION "\"}}";
+  _server.sendContent(chunk);
+  _server.sendContent(""); // Done
 }
 
 void HttpServer::handleTelemetry() {
@@ -1578,30 +1660,122 @@ void HttpServer::handleReset() {
   }
 }
 
+static bool scanInProgress = false;
+static unsigned long scanStartedTime = 0;
+
 void HttpServer::handleScanWifi() {
   _lastInteractionTime = millis();
-  int n = WiFi.scanNetworks(false, true); // true = include hidden networks
-  String json = "[";
-  for (int i = 0; i < n; i++) {
-    if (i > 0) json += ",";
-    int q = 2 * (WiFi.RSSI(i) + 100);
-    if (q > 100) q = 100; if (q < 0) q = 0;
-    String enc = (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "OPEN" : "SECURED";
-    String sName = WiFi.SSID(i);
-    bool isHidden = (sName.length() == 0);
-    if (isHidden) sName = "[Hidden Network - Ch " + String(WiFi.channel(i)) + "]";
-    json += "{\"ssid\":\"" + sName + "\",\"quality\":" + String(q) + ",\"security\":\"" + enc + "\",\"hidden\":" + (isHidden ? "true" : "false") + "}";
+  bool force = _server.hasArg("force") || _server.hasArg("refresh");
+
+  // 1. If a scan is already in progress, check if complete
+  if (scanInProgress) {
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) {
+      if (millis() - scanStartedTime > 12000UL) {
+        WiFi.scanDelete();
+        scanInProgress = false;
+        _server.sendHeader("Access-Control-Allow-Origin", "*");
+        _server.send(200, "application/json", "[]");
+      } else {
+        _server.sendHeader("Access-Control-Allow-Origin", "*");
+        _server.sendHeader("Retry-After", "1");
+        _server.send(202, "application/json", "[]");
+      }
+      return;
+    }
+    // Scan finished
+    scanInProgress = false;
+    goto stream_results;
   }
-  json += "]";
-  WiFi.scanDelete();
-  _server.sendHeader("Access-Control-Allow-Origin", "*");
-  _server.send(200, "application/json", json);
+
+  // 2. If scan results already available from a previous completed scan
+  if (!force && WiFi.scanComplete() >= 0) {
+    goto stream_results;
+  }
+
+  // 3. Start a new async scan
+  {
+    WiFi.enableSTA(true);
+    int startResult = WiFi.scanNetworks(/*async=*/true, /*show_hidden=*/false);
+    if (startResult == WIFI_SCAN_FAILED) {
+      _server.sendHeader("Access-Control-Allow-Origin", "*");
+      _server.send(200, "application/json", "[]");
+      return;
+    }
+    scanInProgress = true;
+    scanStartedTime = millis();
+    _server.sendHeader("Access-Control-Allow-Origin", "*");
+    _server.sendHeader("Retry-After", "1");
+    _server.send(202, "application/json", "[]");
+    return;
+  }
+
+stream_results:
+  {
+    int n = WiFi.scanComplete();
+    if (n <= 0) {
+      WiFi.scanDelete();
+      _server.sendHeader("Access-Control-Allow-Origin", "*");
+      _server.send(200, "application/json", "[]");
+      return;
+    }
+
+    _server.sendHeader("Access-Control-Allow-Origin", "*");
+    _server.sendHeader("Cache-Control", "no-cache");
+    _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    _server.send(200, "application/json", "");
+    _server.sendContent("[");
+
+    int sentCount = 0;
+    // Cap at top 15 networks to save heap and socket buffers
+    for (int i = 0; i < n && sentCount < 15; i++) {
+      String s = WiFi.SSID(i);
+      s.trim();
+      if (s.length() == 0) s = "(Hidden)";
+      s.replace("\\", "\\\\");
+      s.replace("\"", "\\\"");
+
+      int r = WiFi.RSSI(i);
+      int q = 2 * (r + 100);
+      if (q > 100) q = 100; if (q < 0) q = 0;
+      String enc = (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "OPEN" : "SECURED";
+      int ch = WiFi.channel(i);
+      String bssidStr = WiFi.BSSIDstr(i);
+
+      String chunk;
+      chunk.reserve(128);
+      if (sentCount > 0) chunk += ",";
+      chunk += "{\"ssid\":\"";
+      chunk += s;
+      chunk += "\",\"quality\":";
+      chunk += String(q);
+      chunk += ",\"rssi\":";
+      chunk += String(r);
+      chunk += ",\"security\":\"";
+      chunk += enc;
+      chunk += "\",\"channel\":";
+      chunk += String(ch);
+      chunk += ",\"bssid\":\"";
+      chunk += bssidStr;
+      chunk += "\"}";
+
+      _server.sendContent(chunk);
+      sentCount++;
+    }
+
+    _server.sendContent("]");
+    _server.sendContent("");
+    WiFi.scanDelete();
+  }
 }
+
 
 void HttpServer::handleSaveCredentials() {
   _lastInteractionTime = millis();
   String s = _server.hasArg("ssid") ? _server.arg("ssid") : "";
   String p = _server.hasArg("pass") ? _server.arg("pass") : "";
+  int ch = _server.hasArg("channel") ? _server.arg("channel").toInt() : 0;
+  String bssid = _server.hasArg("bssid") ? _server.arg("bssid") : "";
 
   if (s.length() == 0 && _server.hasArg("plain")) {
     String body = _server.arg("plain");
@@ -1617,12 +1791,22 @@ void HttpServer::handleSaveCredentials() {
       int q2 = body.indexOf("\"", q1 + 1);
       if (q1 != -1 && q2 != -1) p = body.substring(q1 + 1, q2);
     }
+    int chIdx = body.indexOf("\"channel\":");
+    if (chIdx != -1) {
+      ch = body.substring(chIdx + 10).toInt();
+    }
+    int bIdx = body.indexOf("\"bssid\":");
+    if (bIdx != -1) {
+      int q1 = body.indexOf("\"", bIdx + 8);
+      int q2 = body.indexOf("\"", q1 + 1);
+      if (q1 != -1 && q2 != -1) bssid = body.substring(q1 + 1, q2);
+    }
   }
 
   _server.sendHeader("Access-Control-Allow-Origin", "*");
-  _server.send(200, "text/plain", "Credentials saved. Device restarting into Controller mode...");
+  _server.send(200, "text/plain", "Credentials saved. Device connecting to Wi-Fi...");
   delay(300);
-  wifiMgr.connectNew(s.c_str(), p.c_str());
+  wifiMgr.connectNew(s.c_str(), p.c_str(), ch, bssid.c_str());
 }
 
 void HttpServer::handleNotFound() {

@@ -12,6 +12,7 @@ import com.shahriyar.smartwificharger.data.local.PendingCommandEntity
 import com.shahriyar.smartwificharger.domain.model.ChargerConfig
 import com.shahriyar.smartwificharger.domain.model.ConnectionMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 data class DeviceCommandResult(
@@ -276,8 +277,26 @@ class DirectApTransport(
 
     override suspend fun scanWifi(): List<com.shahriyar.smartwificharger.data.api.WifiNetworkDto>? {
         return try {
-            val res = getApi()?.scanWifi()
-            if (res?.isSuccessful == true) res.body() else null
+            // Firmware may return 202 Accepted when STA is connected (async scan started).
+            // Retry up to 4 times with 2.5s delay to collect async results.
+            var attempts = 0
+            var result: List<com.shahriyar.smartwificharger.data.api.WifiNetworkDto>? = null
+            while (attempts < 5) {
+                val res = getApi()?.scanWifi()
+                when {
+                    res?.code() == 200 && res.isSuccessful -> {
+                        result = res.body()
+                        break
+                    }
+                    res?.code() == 202 -> {
+                        // Async scan in progress — wait and retry
+                        attempts++
+                        delay(2500L)
+                    }
+                    else -> break
+                }
+            }
+            result
         } catch (e: Exception) { null }
     }
 
@@ -512,8 +531,26 @@ class LocalLanTransport(
 
     override suspend fun scanWifi(): List<com.shahriyar.smartwificharger.data.api.WifiNetworkDto>? {
         return try {
-            val res = getApi()?.scanWifi()
-            if (res?.isSuccessful == true) res.body() else null
+            // Firmware may return 202 Accepted when STA is connected (async scan started).
+            // Retry up to 4 times with 2.5s delay to collect async results.
+            var attempts = 0
+            var result: List<com.shahriyar.smartwificharger.data.api.WifiNetworkDto>? = null
+            while (attempts < 5) {
+                val res = getApi()?.scanWifi()
+                when {
+                    res?.code() == 200 && res.isSuccessful -> {
+                        result = res.body()
+                        break
+                    }
+                    res?.code() == 202 -> {
+                        // Async scan in progress — wait and retry
+                        attempts++
+                        delay(2500L)
+                    }
+                    else -> break
+                }
+            }
+            result
         } catch (e: Exception) { null }
     }
 
