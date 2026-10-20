@@ -34,16 +34,12 @@ void APManager::begin(int channel) {
   // 1. Radio Mode: WIFI_AP_STA with SDK auto-reconnect SILENCED
   WiFi.mode(WIFI_AP_STA);
   WiFi.setAutoReconnect(false); // CRITICAL: Stop SDK background scanning so SoftAP beacon never drops!
+  WiFi.disconnect(false);
   delay(50);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   WiFi.setOutputPower(20.5f); // Maximum RF power (20.5 dBm) for robust signal and range
 
-  // 2. Explicit SoftAP IP Configuration (CRITICAL for rock-solid Android/iOS DHCP lease!)
-  IPAddress apIP(192, 168, 4, 1);
-  IPAddress netMsk(255, 255, 255, 0);
-  WiFi.softAPConfig(apIP, apIP, netMsk);
-
-  // 3. Start SoftAP cleanly (max 4 clients, visible SSID)
+  // 2. Start SoftAP hardware with SSID, password, channel FIRST
   bool ok = false;
   if (isSetup || pass == nullptr || strlen(pass) < 8) {
     ok = WiFi.softAP(ssid, nullptr, _channel, 0, 4);
@@ -51,6 +47,19 @@ void APManager::begin(int channel) {
     ok = WiFi.softAP(ssid, pass, _channel, 0, 4);
   }
   _apActive = ok;
+
+  // 3. Explicit SoftAP IP Configuration AFTER softAP() is active
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress netMsk(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+
+  // 4. CRITICAL FIX FOR ANDROID "Could not get IP address":
+  // Configure LwIP DHCP Server to offer Default Gateway (Option 3) and DNS (Option 6)
+  auto& dhcp = WiFi.softAPDhcpServer();
+  dhcp.setRouter(true);
+  ip4_addr_t dnsAddr;
+  dnsAddr.addr = static_cast<uint32_t>(apIP);
+  dhcp.setDns(dnsAddr);
 
   // 6. Connection event handlers for diagnostics
   onStationConnectedHandler = WiFi.onSoftAPModeStationConnected(
