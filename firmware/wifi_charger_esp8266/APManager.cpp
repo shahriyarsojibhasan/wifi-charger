@@ -30,15 +30,15 @@ void APManager::begin(int channel) {
   if (channel < 1 || channel > 13) channel = 1;
   _channel = channel;
 
-  // 1. Radio Mode: WIFI_AP_STA with SDK auto-reconnect SILENCED
-  WiFi.mode(WIFI_AP_STA);
+  // 1. Radio Mode: Pure WIFI_AP in Setup mode (no routing conflicts) or WIFI_AP_STA when fallback
+  WiFi.mode(isSetup ? WIFI_AP : WIFI_AP_STA);
   WiFi.setAutoReconnect(false); // CRITICAL: Stop SDK background scanning so SoftAP beacon never drops!
-  WiFi.disconnect(false);
+  WiFi.disconnect(false, false);
   delay(50);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   WiFi.setOutputPower(20.5f); // Maximum RF power (20.5 dBm) for robust signal and range
 
-  // 2. Start SoftAP hardware with SSID, password, channel FIRST
+  // 2. Start SoftAP hardware with SSID, password, channel
   bool ok = false;
   if (isSetup || pass == nullptr || strlen(pass) < 8) {
     ok = WiFi.softAP(ssid, nullptr, _channel, 0, 4);
@@ -47,18 +47,22 @@ void APManager::begin(int channel) {
   }
   _apActive = ok;
 
-  // 3. Explicit SoftAP IP Configuration AFTER softAP() is active
+  // 3. Explicit SoftAP IP Configuration (192.168.4.1)
   IPAddress apIP(192, 168, 4, 1);
   IPAddress netMsk(255, 255, 255, 0);
   WiFi.softAPConfig(apIP, apIP, netMsk);
 
-  // 4. CRITICAL FIX FOR ANDROID "Could not get IP address":
-  // Configure LwIP DHCP Server to offer Default Gateway (Option 3) and DNS (Option 6)
+  // 4. Set DHCP lease pool from 192.168.4.2 to 192.168.4.100
+  // Accepts both cached client IPs (.2) and fresh client DHCPDISCOVER
+  struct dhcps_lease lease;
+  lease.enable = true;
+  lease.start_ip.addr = IPAddress(192, 168, 4, 2).v4();
+  lease.end_ip.addr   = IPAddress(192, 168, 4, 100).v4();
+  wifi_softap_set_dhcps_lease(&lease);
+
+  // 5. Ensure DHCP Default Gateway (Option 3) is always provided
   auto& dhcp = WiFi.softAPDhcpServer();
   dhcp.setRouter(true);
-  ip4_addr_t dnsAddr;
-  dnsAddr.addr = static_cast<uint32_t>(apIP);
-  dhcp.setDns(dnsAddr);
 
   // 5. Connection event handlers for diagnostics and client activity tracking
   onStationConnectedHandler = WiFi.onSoftAPModeStationConnected(
