@@ -188,13 +188,6 @@ void WiFiManager::loop() {
       Serial.println(F("[WiFiMgr] Setup mode active: Starting Setup SoftAP..."));
       apMgr.begin(1);
     }
-    // Only refresh the Wi-Fi scan cache when ZERO clients are connected!
-    if (WiFi.softAPgetStationNum() == 0 && !apMgr.hasConnectedClients()) {
-      unsigned long now = millis();
-      if (now - _lastScanTime >= 45000UL) {
-        performScan(false);
-      }
-    }
     return;
   }
 
