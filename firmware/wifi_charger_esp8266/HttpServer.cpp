@@ -16,6 +16,10 @@
 #include <vector>
 #include <algorithm>
 
+extern "C" {
+  #include "user_interface.h"
+}
+
 HttpServer httpSrvr;
 
 // Embedded HTML UI Dashboard & Captive Portal
@@ -1061,6 +1065,7 @@ void HttpServer::handleNetworkGet() {
 
 void HttpServer::handleStatus() {
   _lastInteractionTime = millis();
+  apMgr.markClientActivity();
   const DeviceConfig& cfg = configMgr.get();
   float volts = voltageSensor.getLastVoltage();
   bool relayOn = relayCtrl.isOn();
@@ -1660,66 +1665,114 @@ void HttpServer::handleReset() {
   }
 }
 
-static bool scanInProgress = false;
-static unsigned long scanStartedTime = 0;
+struct ScannedNetworkEntry {
+  char ssid[33];
+  int rssi;
+  int channel;
+  int quality;
+  bool isSecured;
+  char bssid[18];
+};
+
+static std::vector<ScannedNetworkEntry> _cachedScanResults;
+static bool _fastScanActive = false;
+static unsigned long _fastScanStartTime = 0;
+static unsigned long _lastFastScanTime = 0;
+
+static void ICACHE_FLASH_ATTR fastScanDoneCallback(void *arg, STATUS status) {
+  _fastScanActive = false;
+  _lastFastScanTime = millis();
+  _cachedScanResults.clear();
+
+  if (status == OK && arg != nullptr) {
+    struct bss_info *bss = (struct bss_info *)arg;
+    int count = 0;
+    while (bss != nullptr && count < 25) {
+      if (bss->ssid_len > 0) {
+        ScannedNetworkEntry entry;
+        size_t len = (bss->ssid_len < 32) ? bss->ssid_len : 32;
+        memcpy(entry.ssid, bss->ssid, len);
+        entry.ssid[len] = '\0';
+        entry.rssi = bss->rssi;
+        int q = 2 * (bss->rssi + 100);
+        if (q > 100) q = 100; if (q < 0) q = 0;
+        entry.quality = q;
+        entry.channel = bss->channel;
+        entry.isSecured = (bss->authmode != AUTH_OPEN);
+        snprintf(entry.bssid, sizeof(entry.bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 bss->bssid[0], bss->bssid[1], bss->bssid[2],
+                 bss->bssid[3], bss->bssid[4], bss->bssid[5]);
+        _cachedScanResults.push_back(entry);
+        count++;
+      }
+      bss = STAILQ_NEXT(bss, next);
+    }
+  }
+  Serial.printf("[HttpServer] Fast Wi-Fi scan completed: %d networks found\n", (int)_cachedScanResults.size());
+}
+
+static bool startSafeFastScan() {
+  if (_fastScanActive) return true;
+
+  // Ensure radio is in WIFI_AP_STA
+  wifi_set_opmode_current(STATIONAP_MODE);
+
+  struct scan_config sc;
+  memset(&sc, 0, sizeof(sc));
+  sc.ssid = nullptr;
+  sc.bssid = nullptr;
+  sc.channel = 0; // Sweep all 2.4GHz channels
+  sc.show_hidden = 0;
+  sc.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+  // Dwell time: 20ms min, 35ms max per channel!
+  // Channels 1..11 take only ~330ms total so SoftAP beacon is preserved and phone NEVER disconnects!
+  sc.scan_time.active.min = 20;
+  sc.scan_time.active.max = 35;
+
+  if (wifi_station_scan(&sc, fastScanDoneCallback)) {
+    _fastScanActive = true;
+    _fastScanStartTime = millis();
+    return true;
+  }
+  return false;
+}
 
 void HttpServer::handleScanWifi() {
   _lastInteractionTime = millis();
+  apMgr.markClientActivity();
   bool force = _server.hasArg("force") || _server.hasArg("refresh");
+  unsigned long now = millis();
 
-  // 1. If a scan is already in progress, check if complete
-  if (scanInProgress) {
-    int n = WiFi.scanComplete();
-    if (n == WIFI_SCAN_RUNNING) {
-      if (millis() - scanStartedTime > 12000UL) {
-        WiFi.scanDelete();
-        scanInProgress = false;
-        _server.sendHeader("Access-Control-Allow-Origin", "*");
-        _server.send(200, "application/json", "[]");
-      } else {
-        _server.sendHeader("Access-Control-Allow-Origin", "*");
-        _server.sendHeader("Retry-After", "1");
-        _server.send(202, "application/json", "[]");
-      }
-      return;
-    }
-    // Scan finished
-    scanInProgress = false;
-    goto stream_results;
-  }
-
-  // 2. If scan results already available from a previous completed scan
-  if (!force && WiFi.scanComplete() >= 0) {
-    goto stream_results;
-  }
-
-  // 3. Start a new async scan
-  {
-    WiFi.enableSTA(true);
-    int startResult = WiFi.scanNetworks(/*async=*/true, /*show_hidden=*/false);
-    if (startResult == WIFI_SCAN_FAILED) {
+  // 1. If fast scan is actively running
+  if (_fastScanActive) {
+    if (now - _fastScanStartTime > 5000UL) {
+      _fastScanActive = false; // Scan timed out
+    } else {
       _server.sendHeader("Access-Control-Allow-Origin", "*");
-      _server.send(200, "application/json", "[]");
+      _server.sendHeader("Retry-After", "1");
+      _server.send(202, "application/json", "[]");
       return;
     }
-    scanInProgress = true;
-    scanStartedTime = millis();
-    _server.sendHeader("Access-Control-Allow-Origin", "*");
-    _server.sendHeader("Retry-After", "1");
-    _server.send(202, "application/json", "[]");
-    return;
+  }
+
+  // 2. If cached results are fresh (less than 25 seconds old) and not forced:
+  if (!force && _cachedScanResults.size() > 0 && (now - _lastFastScanTime < 25000UL)) {
+    goto stream_results;
+  }
+
+  // 3. Start a new safe fast scan
+  {
+    bool ok = startSafeFastScan();
+    if (ok) {
+      _server.sendHeader("Access-Control-Allow-Origin", "*");
+      _server.sendHeader("Retry-After", "1");
+      _server.send(202, "application/json", "[]");
+      return;
+    }
   }
 
 stream_results:
   {
-    int n = WiFi.scanComplete();
-    if (n <= 0) {
-      WiFi.scanDelete();
-      _server.sendHeader("Access-Control-Allow-Origin", "*");
-      _server.send(200, "application/json", "[]");
-      return;
-    }
-
     _server.sendHeader("Access-Control-Allow-Origin", "*");
     _server.sendHeader("Cache-Control", "no-cache");
     _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -1727,45 +1780,30 @@ stream_results:
     _server.sendContent("[");
 
     int sentCount = 0;
-    // Cap at top 15 networks to save heap and socket buffers
-    for (int i = 0; i < n && sentCount < 15; i++) {
-      String s = WiFi.SSID(i);
-      s.trim();
-      if (s.length() == 0) s = "(Hidden)";
-      s.replace("\\", "\\\\");
-      s.replace("\"", "\\\"");
-
-      int r = WiFi.RSSI(i);
-      int q = 2 * (r + 100);
-      if (q > 100) q = 100; if (q < 0) q = 0;
-      String enc = (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "OPEN" : "SECURED";
-      int ch = WiFi.channel(i);
-      String bssidStr = WiFi.BSSIDstr(i);
-
+    for (size_t i = 0; i < _cachedScanResults.size() && sentCount < 20; i++) {
+      const auto& net = _cachedScanResults[i];
       String chunk;
       chunk.reserve(128);
       if (sentCount > 0) chunk += ",";
       chunk += "{\"ssid\":\"";
-      chunk += s;
+      chunk += net.ssid;
       chunk += "\",\"quality\":";
-      chunk += String(q);
+      chunk += String(net.quality);
       chunk += ",\"rssi\":";
-      chunk += String(r);
+      chunk += String(net.rssi);
       chunk += ",\"security\":\"";
-      chunk += enc;
+      chunk += net.isSecured ? "SECURED" : "OPEN";
       chunk += "\",\"channel\":";
-      chunk += String(ch);
+      chunk += String(net.channel);
       chunk += ",\"bssid\":\"";
-      chunk += bssidStr;
+      chunk += net.bssid;
       chunk += "\"}";
-
       _server.sendContent(chunk);
       sentCount++;
     }
 
     _server.sendContent("]");
     _server.sendContent("");
-    WiFi.scanDelete();
   }
 }
 

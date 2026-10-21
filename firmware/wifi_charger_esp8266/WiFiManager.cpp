@@ -313,6 +313,11 @@ void WiFiManager::loop() {
     }
 
     int stationsConnected = WiFi.softAPgetStationNum();
+    bool clientActive = (stationsConnected > 0) || 
+                        apMgr.hasConnectedClients() || 
+                        httpSrvr.hasRecentInteraction() || 
+                        (apMgr.getLastClientActivityTime() > 0 && (now - apMgr.getLastClientActivityTime() < 25000UL)) ||
+                        (httpSrvr.getLastInteractionTime() > 0 && (now - httpSrvr.getLastInteractionTime() < 25000UL));
 
     // ── SUB-STATE 1: PROBING ROUTER IN PROGRESS ──
     if (_probingRouter) {
@@ -323,33 +328,33 @@ void WiFiManager::loop() {
         return;
       }
 
-      // If phone starts connecting (stationsConnected > 0) OR probe reaches 2.5s timeout:
-      if (stationsConnected > 0 || (now - _probeStartTime >= 2500UL)) {
-        if (stationsConnected > 0) {
-          Serial.println(F("[WiFiMgr] Phone connecting to SoftAP! Aborted router probe to prioritize phone connection."));
+      // If phone starts connecting or client activity detected OR probe reaches 2.0s timeout:
+      if (clientActive || (now - _probeStartTime >= 2000UL)) {
+        if (clientActive) {
+          Serial.println(F("[WiFiMgr] Phone/Client active on SoftAP! Aborted router probe to protect SoftAP connection."));
         } else {
-          Serial.println(F("[WiFiMgr] Router probe finished (2.5s, not found). Disconnecting STA, locking radio to SoftAP Channel 1."));
+          Serial.println(F("[WiFiMgr] Router probe finished (2s, not found). Disconnecting STA, locking radio to SoftAP Channel 1."));
         }
         WiFi.disconnect(false);
         WiFi.setAutoReconnect(false);
         _probingRouter = false;
-        _lastAttemptTime = now; // Stay quiet for the next 35 seconds!
+        _lastAttemptTime = now; // Stay quiet for the next 45 seconds!
       }
       return;
     }
 
-    // ── SUB-STATE 2: PHONE CONNECTED SHIELD ──
-    // When a phone or client is actively connected to the SoftAP (stationsConnected > 0):
+    // ── SUB-STATE 2: PHONE / CLIENT ACTIVE SHIELD ──
+    // When a phone or client is actively connected to the SoftAP or interacting via HTTP:
     // 1. Keep NonOS SDK auto-reconnect completely off!
-    // 2. Radio stays 100% on SoftAP. NEVER probe or scan!
-    if (stationsConnected > 0) {
+    // 2. Radio stays 100% locked on SoftAP Channel 1. NEVER probe, begin, or scan!
+    if (clientActive) {
       WiFi.setAutoReconnect(false);
-      _lastAttemptTime = now; // Defer router reconnect indefinitely while phone is active
+      _lastAttemptTime = now; // Defer router reconnect indefinitely while phone/client is active
       return;
     }
 
-    // ── SUB-STATE 3: NON-DISRUPTIVE ROUTER PROBE (Every 35s, ONLY when NO phone is connected) ──
-    if (now - _lastAttemptTime >= 35000UL) {
+    // ── SUB-STATE 3: NON-DISRUPTIVE ROUTER PROBE (Every 45s, ONLY when NO phone is connected) ──
+    if (now - _lastAttemptTime >= 45000UL) {
       _lastAttemptTime = now;
       _probeStartTime = now;
       _probingRouter = true;

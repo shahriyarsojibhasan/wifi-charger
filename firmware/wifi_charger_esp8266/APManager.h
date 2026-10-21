@@ -21,9 +21,16 @@ public:
   void restartAp();
   int getChannel() const { return _channel; }
 
+  bool hasConnectedClients() const { return (_apActive && (_clientsConnected > 0 || WiFi.softAPgetStationNum() > 0)); }
+  int getClientsConnected() const { return _clientsConnected; }
+  unsigned long getLastClientActivityTime() const { return _lastClientActivityTime; }
+  void markClientActivity() { _lastClientActivityTime = millis(); }
+
 private:
   bool _apActive;
   int _channel;
+  int _clientsConnected;
+  unsigned long _lastClientActivityTime;
 };
 
 extern APManager apMgr;

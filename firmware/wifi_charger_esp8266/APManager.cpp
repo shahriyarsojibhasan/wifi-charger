@@ -7,7 +7,7 @@ extern "C" {
 
 APManager apMgr;
 
-APManager::APManager() : _apActive(false), _channel(1) {}
+APManager::APManager() : _apActive(false), _channel(1), _clientsConnected(0), _lastClientActivityTime(0) {}
 
 static WiFiEventHandler onStationConnectedHandler;
 static WiFiEventHandler onStationDisconnectedHandler;
@@ -24,9 +24,8 @@ void APManager::begin(int channel) {
 
   // Setup mode (no Wi-Fi configured) = "SMART-CHARGER-SETUP", OPEN (no password)
   // Configured mode (router offline) = "SMART-CHARGER-CONTROLLER", WPA2 password ("12345678" or configured)
-  // Always broadcast "SMART-CHARGER-CONTROLLER" with WPA2 password ("12345678" or configured)
-  const char* ssid = DEFAULT_AP_SSID;
-  const char* pass = (strlen(cfg.apPass) >= 8) ? cfg.apPass : DEFAULT_AP_PASS;
+  const char* ssid = isSetup ? SETUP_AP_SSID : DEFAULT_AP_SSID;
+  const char* pass = isSetup ? nullptr : ((strlen(cfg.apPass) >= 8) ? cfg.apPass : DEFAULT_AP_PASS);
 
   if (channel < 1 || channel > 13) channel = 1;
   _channel = channel;
@@ -61,19 +60,23 @@ void APManager::begin(int channel) {
   dnsAddr.addr = static_cast<uint32_t>(apIP);
   dhcp.setDns(dnsAddr);
 
-  // 6. Connection event handlers for diagnostics
+  // 5. Connection event handlers for diagnostics and client activity tracking
   onStationConnectedHandler = WiFi.onSoftAPModeStationConnected(
     [](const WiFiEventSoftAPModeStationConnected& evt) {
+      apMgr._clientsConnected = WiFi.softAPgetStationNum();
+      apMgr._lastClientActivityTime = millis();
       Serial.printf("[APMgr] PHONE CONNECTED: MAC:%02X:%02X:%02X:%02X:%02X:%02X | Total clients: %d\n",
                     evt.mac[0], evt.mac[1], evt.mac[2], evt.mac[3], evt.mac[4], evt.mac[5],
-                    WiFi.softAPgetStationNum());
+                    apMgr._clientsConnected);
   });
 
   onStationDisconnectedHandler = WiFi.onSoftAPModeStationDisconnected(
     [](const WiFiEventSoftAPModeStationDisconnected& evt) {
+      apMgr._clientsConnected = WiFi.softAPgetStationNum();
+      apMgr._lastClientActivityTime = millis();
       Serial.printf("[APMgr] PHONE DISCONNECTED: MAC:%02X:%02X:%02X:%02X:%02X:%02X | Remaining: %d\n",
                     evt.mac[0], evt.mac[1], evt.mac[2], evt.mac[3], evt.mac[4], evt.mac[5],
-                    WiFi.softAPgetStationNum());
+                    apMgr._clientsConnected);
   });
 
   Serial.printf("[APMgr] SoftAP '%s' ch=%d IP=%s Auth=%s Status=%s\n",
@@ -96,7 +99,7 @@ String APManager::getApIpString() const {
 }
 
 String APManager::getApSsid() const {
-  return String(DEFAULT_AP_SSID);
+  return String(isSetupMode() ? SETUP_AP_SSID : DEFAULT_AP_SSID);
 }
 
 void APManager::restartAp() {
@@ -110,6 +113,7 @@ void APManager::stop() {
     wifi_softap_dhcps_stop();
     WiFi.softAPdisconnect(true);
     _apActive = false;
+    _clientsConnected = 0;
     Serial.println(F("[APMgr] SoftAP stopped. Radio in STA mode."));
   }
 }
