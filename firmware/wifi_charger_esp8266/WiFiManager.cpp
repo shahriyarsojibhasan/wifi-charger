@@ -368,8 +368,8 @@ void WiFiManager::loop() {
       return;
     }
 
-    // ── SUB-STATE 3: NON-DISRUPTIVE ROUTER PROBE (Every 45s, ONLY when NO phone is connected) ──
-    if (now - _lastAttemptTime >= 45000UL) {
+    // ── SUB-STATE 3: NON-DISRUPTIVE ROUTER PROBE (Every 45s, ONLY when NO phone is connected and Wi-Fi configured) ──
+    if (strlen(cfg.wifiSsid) > 0 && (now - _lastAttemptTime >= 45000UL)) {
       _lastAttemptTime = now;
       _probeStartTime = now;
       _probingRouter = true;

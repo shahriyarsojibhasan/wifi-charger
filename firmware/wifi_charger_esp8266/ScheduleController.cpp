@@ -32,11 +32,6 @@ bool ScheduleController::isScheduleActiveNow() const {
 
   struct tm tmInfo;
   if (!timeMgr.getLocalTime(&tmInfo)) {
-    static unsigned long lastLog = 0;
-    if (millis() - lastLog >= 10000UL) {
-      lastLog = millis();
-      Serial.printf("[ScheduleCtrl] Waiting for clock sync (current epoch %lu)\n", (unsigned long)timeMgr.getEpoch());
-    }
     return false;
   }
 
