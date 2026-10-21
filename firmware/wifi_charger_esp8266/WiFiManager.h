@@ -3,6 +3,16 @@
 
 #include "Types.h"
 #include <ESP8266WiFi.h>
+#include <vector>
+
+struct ScannedNetworkEntry {
+  char ssid[33];
+  int rssi;
+  int channel;
+  int quality;
+  bool isSecured;
+  char bssid[18];
+};
 
 class WiFiManager {
 public:
@@ -21,6 +31,12 @@ public:
   void connectNew(const char* ssid, const char* pass, int channel = 0, const char* bssid = nullptr);
   void resetCredentials();
 
+  void performScan(bool async = false);
+  const std::vector<ScannedNetworkEntry>& getScannedNetworks() const { return _cachedScanResults; }
+  size_t getScannedNetworkCount() const { return _cachedScanResults.size(); }
+  bool isScanRunning() const { return _scanRunning; }
+  void clearScanResults() { _cachedScanResults.clear(); }
+
 private:
   bool          _lastConnected;
   IPAddress     _lastIp;
@@ -34,6 +50,10 @@ private:
   unsigned long _asyncScanStartTime;  // Timestamp when async scan was triggered
   bool          _probingRouter;       // True when non-disruptive router probe is active
   unsigned long _probeStartTime;      // Timestamp when probe was started
+
+  std::vector<ScannedNetworkEntry> _cachedScanResults;
+  bool          _scanRunning;
+  unsigned long _lastScanTime;
 };
 
 extern WiFiManager wifiMgr;

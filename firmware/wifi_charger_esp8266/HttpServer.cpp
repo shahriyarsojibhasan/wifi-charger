@@ -1665,146 +1665,51 @@ void HttpServer::handleReset() {
   }
 }
 
-struct ScannedNetworkEntry {
-  char ssid[33];
-  int rssi;
-  int channel;
-  int quality;
-  bool isSecured;
-  char bssid[18];
-};
-
-static std::vector<ScannedNetworkEntry> _cachedScanResults;
-static bool _fastScanActive = false;
-static unsigned long _fastScanStartTime = 0;
-static unsigned long _lastFastScanTime = 0;
-
-static void ICACHE_FLASH_ATTR fastScanDoneCallback(void *arg, STATUS status) {
-  _fastScanActive = false;
-  _lastFastScanTime = millis();
-  _cachedScanResults.clear();
-
-  if (status == OK && arg != nullptr) {
-    struct bss_info *bss = (struct bss_info *)arg;
-    int count = 0;
-    while (bss != nullptr && count < 25) {
-      if (bss->ssid_len > 0) {
-        ScannedNetworkEntry entry;
-        size_t len = (bss->ssid_len < 32) ? bss->ssid_len : 32;
-        memcpy(entry.ssid, bss->ssid, len);
-        entry.ssid[len] = '\0';
-        entry.rssi = bss->rssi;
-        int q = 2 * (bss->rssi + 100);
-        if (q > 100) q = 100; if (q < 0) q = 0;
-        entry.quality = q;
-        entry.channel = bss->channel;
-        entry.isSecured = (bss->authmode != AUTH_OPEN);
-        snprintf(entry.bssid, sizeof(entry.bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 bss->bssid[0], bss->bssid[1], bss->bssid[2],
-                 bss->bssid[3], bss->bssid[4], bss->bssid[5]);
-        _cachedScanResults.push_back(entry);
-        count++;
-      }
-      bss = STAILQ_NEXT(bss, next);
-    }
-  }
-  Serial.printf("[HttpServer] Fast Wi-Fi scan completed: %d networks found\n", (int)_cachedScanResults.size());
-}
-
-static bool startSafeFastScan() {
-  if (_fastScanActive) return true;
-
-  // Ensure radio is in WIFI_AP_STA
-  wifi_set_opmode_current(STATIONAP_MODE);
-
-  struct scan_config sc;
-  memset(&sc, 0, sizeof(sc));
-  sc.ssid = nullptr;
-  sc.bssid = nullptr;
-  sc.channel = 0; // Sweep all 2.4GHz channels
-  sc.show_hidden = 0;
-  sc.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-  // Dwell time: 20ms min, 35ms max per channel!
-  // Channels 1..11 take only ~330ms total so SoftAP beacon is preserved and phone NEVER disconnects!
-  sc.scan_time.active.min = 20;
-  sc.scan_time.active.max = 35;
-
-  if (wifi_station_scan(&sc, fastScanDoneCallback)) {
-    _fastScanActive = true;
-    _fastScanStartTime = millis();
-    return true;
-  }
-  return false;
-}
-
 void HttpServer::handleScanWifi() {
   _lastInteractionTime = millis();
   apMgr.markClientActivity();
-  bool force = _server.hasArg("force") || _server.hasArg("refresh");
-  unsigned long now = millis();
 
-  // 1. If fast scan is actively running
-  if (_fastScanActive) {
-    if (now - _fastScanStartTime > 5000UL) {
-      _fastScanActive = false; // Scan timed out
-    } else {
-      _server.sendHeader("Access-Control-Allow-Origin", "*");
-      _server.sendHeader("Retry-After", "1");
-      _server.send(202, "application/json", "[]");
-      return;
-    }
+  // If scan cache is empty and NO phone is connected, we can scan:
+  if (wifiMgr.getScannedNetworkCount() == 0 && WiFi.softAPgetStationNum() == 0 && !apMgr.hasConnectedClients()) {
+    wifiMgr.performScan(false);
   }
 
-  // 2. If cached results are fresh (less than 25 seconds old) and not forced:
-  if (!force && _cachedScanResults.size() > 0 && (now - _lastFastScanTime < 25000UL)) {
-    goto stream_results;
+  // When a phone is connected, we NEVER perform an active channel sweep!
+  // Hopping channels would break the RF PLL lock and cause the phone to drop.
+  // Instead, we immediately serve the pre-cached scan results in 2ms!
+  const auto& nets = wifiMgr.getScannedNetworks();
+
+  _server.sendHeader("Access-Control-Allow-Origin", "*");
+  _server.sendHeader("Cache-Control", "no-cache");
+  _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server.send(200, "application/json", "");
+  _server.sendContent("[");
+
+  int sentCount = 0;
+  for (size_t i = 0; i < nets.size() && sentCount < 25; i++) {
+    const auto& net = nets[i];
+    String chunk;
+    chunk.reserve(128);
+    if (sentCount > 0) chunk += ",";
+    chunk += "{\"ssid\":\"";
+    chunk += net.ssid;
+    chunk += "\",\"quality\":";
+    chunk += String(net.quality);
+    chunk += ",\"rssi\":";
+    chunk += String(net.rssi);
+    chunk += ",\"security\":\"";
+    chunk += net.isSecured ? "SECURED" : "OPEN";
+    chunk += "\",\"channel\":";
+    chunk += String(net.channel);
+    chunk += ",\"bssid\":\"";
+    chunk += net.bssid;
+    chunk += "\"}";
+    _server.sendContent(chunk);
+    sentCount++;
   }
 
-  // 3. Start a new safe fast scan
-  {
-    bool ok = startSafeFastScan();
-    if (ok) {
-      _server.sendHeader("Access-Control-Allow-Origin", "*");
-      _server.sendHeader("Retry-After", "1");
-      _server.send(202, "application/json", "[]");
-      return;
-    }
-  }
-
-stream_results:
-  {
-    _server.sendHeader("Access-Control-Allow-Origin", "*");
-    _server.sendHeader("Cache-Control", "no-cache");
-    _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    _server.send(200, "application/json", "");
-    _server.sendContent("[");
-
-    int sentCount = 0;
-    for (size_t i = 0; i < _cachedScanResults.size() && sentCount < 20; i++) {
-      const auto& net = _cachedScanResults[i];
-      String chunk;
-      chunk.reserve(128);
-      if (sentCount > 0) chunk += ",";
-      chunk += "{\"ssid\":\"";
-      chunk += net.ssid;
-      chunk += "\",\"quality\":";
-      chunk += String(net.quality);
-      chunk += ",\"rssi\":";
-      chunk += String(net.rssi);
-      chunk += ",\"security\":\"";
-      chunk += net.isSecured ? "SECURED" : "OPEN";
-      chunk += "\",\"channel\":";
-      chunk += String(net.channel);
-      chunk += ",\"bssid\":\"";
-      chunk += net.bssid;
-      chunk += "\"}";
-      _server.sendContent(chunk);
-      sentCount++;
-    }
-
-    _server.sendContent("]");
-    _server.sendContent("");
-  }
+  _server.sendContent("]");
+  _server.sendContent("");
 }
 
 

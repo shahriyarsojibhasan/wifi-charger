@@ -20,7 +20,9 @@ WiFiManager::WiFiManager()
     _asyncScanPending(false),
     _asyncScanStartTime(0),
     _probingRouter(false),
-    _probeStartTime(0)
+    _probeStartTime(0),
+    _scanRunning(false),
+    _lastScanTime(0)
 {
 }
 
@@ -158,9 +160,15 @@ void WiFiManager::begin() {
 
   } else {
     // ── Pure Setup Mode: No Wi-Fi configured ──────────────────────────────
-    Serial.println(F("[WiFiMgr] SETUP MODE: No Wi-Fi configured. Starting Setup SoftAP 'SMART CHARGER SETUP'..."));
+    Serial.println(F("[WiFiMgr] SETUP MODE: No Wi-Fi configured."));
     _lastConnected = false;
     _disconnectStartTime = millis();
+
+    // 1. Scan Wi-Fi networks BEFORE launching SoftAP!
+    // Since no client/phone is connected yet, this scan is 100% clean and causes zero drops.
+    performScan(false);
+
+    Serial.println(F("[WiFiMgr] Starting Setup SoftAP 'SMART CHARGER SETUP'..."));
     apMgr.begin(1);
   }
 }
@@ -173,12 +181,19 @@ void WiFiManager::loop() {
   bool hasCredentials = (strlen(cfg.wifiSsid) > 0);
 
   // Pure Setup Mode:
-  // SoftAP MUST remain 100% uninterrupted in WIFI_AP mode on channel 1!
-  // No STA background scanning or channel hopping.
+  // SoftAP MUST remain 100% uninterrupted in WIFI_AP_STA mode on channel 1!
+  // No STA background scanning or channel hopping while phone is connected.
   if (!hasCredentials) {
     if (!apMgr.isActive()) {
       Serial.println(F("[WiFiMgr] Setup mode active: Starting Setup SoftAP..."));
       apMgr.begin(1);
+    }
+    // Only refresh the Wi-Fi scan cache when ZERO clients are connected!
+    if (WiFi.softAPgetStationNum() == 0 && !apMgr.hasConnectedClients()) {
+      unsigned long now = millis();
+      if (now - _lastScanTime >= 45000UL) {
+        performScan(false);
+      }
     }
     return;
   }
@@ -461,4 +476,44 @@ void WiFiManager::resetCredentials() {
   Serial.println(F("[WiFiMgr] Wi-Fi credentials reset. Rebooting into Setup mode..."));
   delay(300);
   ESP.restart();
+}
+
+void WiFiManager::performScan(bool async) {
+  // If a phone is currently connected to SoftAP, DO NOT do an active RF channel hop!
+  // It would break the RF synthesizer lock and disconnect the phone.
+  if (apMgr.hasConnectedClients() || WiFi.softAPgetStationNum() > 0) {
+    Serial.println(F("[WiFiMgr] Phone actively connected to SoftAP! Skipping RF channel hop to protect connection. Serving cached scan."));
+    return;
+  }
+
+  Serial.println(F("[WiFiMgr] Performing clean background Wi-Fi scan (no clients connected)..."));
+  _scanRunning = true;
+  WiFi.enableSTA(true);
+  int n = WiFi.scanNetworks(false, false);
+  _cachedScanResults.clear();
+  if (n > 0) {
+    for (int i = 0; i < n && _cachedScanResults.size() < 25; i++) {
+      String s = WiFi.SSID(i);
+      s.trim();
+      if (s.length() == 0) continue;
+      ScannedNetworkEntry entry;
+      size_t len = (s.length() < 32) ? s.length() : 32;
+      memcpy(entry.ssid, s.c_str(), len);
+      entry.ssid[len] = '\0';
+      entry.rssi = WiFi.RSSI(i);
+      int q = 2 * (entry.rssi + 100);
+      if (q > 100) q = 100; if (q < 0) q = 0;
+      entry.quality = q;
+      entry.channel = WiFi.channel(i);
+      entry.isSecured = (WiFi.encryptionType(i) != ENC_TYPE_NONE);
+      String bStr = WiFi.BSSIDstr(i);
+      strncpy(entry.bssid, bStr.c_str(), sizeof(entry.bssid) - 1);
+      entry.bssid[sizeof(entry.bssid) - 1] = '\0';
+      _cachedScanResults.push_back(entry);
+    }
+  }
+  WiFi.scanDelete();
+  _scanRunning = false;
+  _lastScanTime = millis();
+  Serial.printf("[WiFiMgr] Wi-Fi scan completed: %d networks cached\n", (int)_cachedScanResults.size());
 }
