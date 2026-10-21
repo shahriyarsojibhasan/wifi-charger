@@ -79,14 +79,15 @@ void WiFiManager::begin() {
       WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
     }
 
-    // Wait up to 7 seconds (if router is off, start fallback SoftAP quickly!)
+    // Wait up to 5.5 seconds (if router is off, start fallback SoftAP quickly without WDT resets!)
     unsigned long start = millis();
     bool channelFallbackDone = false;
-    while (WiFi.status() != WL_CONNECTED && (millis() - start < 7000)) {
-      delay(200);
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 5500)) {
+      delay(100);
+      ESP.wdtFeed();
       yield();
-      // After 3.5s without connection on directed probe, try full broadcast scan
-      if (!channelFallbackDone && (millis() - start >= 3500)) {
+      // After 2.5s without connection on directed probe, try full broadcast scan
+      if (!channelFallbackDone && (millis() - start >= 2500)) {
         channelFallbackDone = true;
         Serial.println(F("[WiFiMgr] Directed probe timed out. Full broadcast scan..."));
         WiFi.config(0U, 0U, 0U); // Release static IP before full scan
@@ -141,12 +142,12 @@ void WiFiManager::begin() {
       apMgr.stop();
       WiFi.mode(WIFI_STA);
       WiFi.setAutoReconnect(true);
-      Serial.printf("[WiFiMgr] CONNECTED! SSID=%s IP=%s Ch=%d BSSID=%s (100%% STA)\n",
+      Serial.printf("[WiFiMgr] CONNECTED! SSID=%s IP=%s Ch=%d BSSID=%s (100%% STA, SoftAP OFF)\n",
                     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
                     connectedCh, mcfg.wifiBssid);
     } else {
       // ── Boot connect timed out: start fallback SoftAP ────────────────────
-      Serial.println(F("[WiFiMgr] Boot connect timed out (>7s). Starting fallback SoftAP..."));
+      Serial.println(F("[WiFiMgr] Boot connect timed out (>5.5s). Starting fallback SoftAP 'SMART-CHARGER-CONTROLLER'..."));
       _lastAttemptTime = millis();
       _disconnectStartTime = millis();
       _failedAttempts = 0;
@@ -336,12 +337,12 @@ void WiFiManager::loop() {
         return;
       }
 
-      // If phone starts connecting or client activity detected OR probe reaches 2.0s timeout:
-      if (clientActive || (now - _probeStartTime >= 2000UL)) {
+      // If phone starts connecting or client activity detected OR probe reaches 4.5s timeout:
+      if (clientActive || (now - _probeStartTime >= 4500UL)) {
         if (clientActive) {
           Serial.println(F("[WiFiMgr] Phone/Client active on SoftAP! Aborted router probe to protect SoftAP connection."));
         } else {
-          Serial.println(F("[WiFiMgr] Router probe finished (2s, not found). Disconnecting STA, locking radio to SoftAP Channel 1."));
+          Serial.println(F("[WiFiMgr] Router probe finished (4.5s, not found). Disconnecting STA, locking radio to SoftAP Channel 1."));
         }
         WiFi.disconnect(false);
         WiFi.setAutoReconnect(false);
@@ -420,8 +421,13 @@ void WiFiManager::connectNew(const char* ssid, const char* pass, int channel, co
   cfg.wifiSsid[sizeof(cfg.wifiSsid) - 1] = '\0';
   strncpy(cfg.wifiPass, pass, sizeof(cfg.wifiPass) - 1);
   cfg.wifiPass[sizeof(cfg.wifiPass) - 1] = '\0';
-  cfg.wifiChannel = 0; // Let router negotiate channel freely!
-  memset(cfg.wifiBssid, 0, sizeof(cfg.wifiBssid));
+  cfg.wifiChannel = channel;
+  if (bssid && strlen(bssid) == 17) {
+    strncpy(cfg.wifiBssid, bssid, sizeof(cfg.wifiBssid) - 1);
+    cfg.wifiBssid[sizeof(cfg.wifiBssid) - 1] = '\0';
+  } else {
+    memset(cfg.wifiBssid, 0, sizeof(cfg.wifiBssid));
+  }
 
   // Clear cached IP so we get fresh DHCP from router
   cfg.cachedIp = 0;
@@ -430,30 +436,10 @@ void WiFiManager::connectNew(const char* ssid, const char* pass, int channel, co
   cfg.cachedDns = 0;
   configMgr.save();
 
-  Serial.printf("[WiFiMgr] Saved new credentials for '%s'. Initiating STA connect (SoftAP stays alive)...\n",
+  Serial.printf("[WiFiMgr] Saved new credentials for '%s'. Clean rebooting into STA mode...\n",
                 cfg.wifiSsid);
-
-  // 1. Release static IP so fresh DHCP from router is always requested
-  WiFi.config(0U, 0U, 0U);
-
-  // 2. Keep SoftAP alive in WIFI_AP_STA mode so the phone NEVER disconnects during setup!
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.setAutoReconnect(true);
-
-  // 3. Disconnect previous STA association cleanly
-  WiFi.disconnect(false);
-  delay(100);
-
-  // 4. Begin connection on all channels (multi-channel broadcast probe)
-  WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
-
-  // 5. Reset state machine so loop() properly detects the new connection
-  _lastConnected = false;
-  _lastAttemptTime = millis();
-  _disconnectStartTime = millis();
-  _failedAttempts = 0;
-  _lastStatus = -1; // Force status log on next loop tick
-  _asyncScanPending = false;
+  delay(300);
+  ESP.restart();
 }
 
 void WiFiManager::resetCredentials() {

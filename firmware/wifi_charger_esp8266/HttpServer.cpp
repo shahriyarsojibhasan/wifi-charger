@@ -987,9 +987,29 @@ void HttpServer::handleSaveCredentials() {
     }
   }
 
+  s.trim();
+  p.trim();
+
+  if (s.length() == 0) {
+    _server.sendHeader("Access-Control-Allow-Origin", "*");
+    _server.send(400, "application/json", "{\"success\":false,\"error\":\"SSID cannot be empty\"}");
+    return;
+  }
+
+  // 1. Send HTTP 200 response to client before restarting
   _server.sendHeader("Access-Control-Allow-Origin", "*");
-  _server.send(200, "text/plain", "Credentials saved. Device connecting to Wi-Fi...");
-  delay(300);
+  _server.sendHeader("Connection", "close");
+  _server.send(200, "application/json", "{\"success\":true,\"message\":\"Credentials saved. Connecting to router...\"}");
+
+  // 2. Allow TCP network packets to flush completely out of LwIP buffer to client
+  unsigned long flushStart = millis();
+  while (millis() - flushStart < 600) {
+    _server.handleClient();
+    delay(10);
+    yield();
+  }
+
+  // 3. Save config and perform clean reboot into pure STA mode
   wifiMgr.connectNew(s.c_str(), p.c_str(), ch, bssid.c_str());
 }
 
