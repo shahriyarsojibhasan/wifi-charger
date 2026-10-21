@@ -1024,23 +1024,38 @@ void HttpServer::handleNotFound() {
   }
 
   String uri = _server.uri();
-  // Return 204 immediately for browser background assets (icons, maps, fonts) to prevent captive portal infinite loops
+
+  // 1. Immediately return 204 No Content for common browser background probes and static assets
   if (uri.endsWith(".ico") || uri.endsWith(".png") || uri.endsWith(".jpg") || 
       uri.endsWith(".jpeg") || uri.endsWith(".gif") || uri.endsWith(".css") || 
       uri.endsWith(".js") || uri.endsWith(".map") || uri.endsWith(".woff") || 
-      uri.endsWith(".woff2") || uri.endsWith(".ttf") || uri.endsWith(".svg")) {
+      uri.endsWith(".woff2") || uri.endsWith(".ttf") || uri.endsWith(".svg") ||
+      uri.endsWith(".json") || uri.endsWith(".xml")) {
     _server.sendHeader("Access-Control-Allow-Origin", "*");
     _server.send(204, "text/plain", "");
     return;
   }
 
-  bool isApClient = (_server.client().remoteIP()[2] == 4 || apMgr.isSetupMode());
-  if (isApClient && !uri.startsWith("/api/")) {
+  // 2. Specific OS Captive Portal Probe Detection (Android, Apple, Windows)
+  bool isCaptiveProbe = (uri == "/generate_204" || uri == "/gen_204" || 
+                         uri.endsWith("/generate_204") || uri.endsWith("/gen_204") ||
+                         uri == "/hotspot-detect.html" || uri == "/canonical.html" ||
+                         uri == "/ncsi.txt" || uri == "/connecttest.txt" || uri == "/redirect");
+
+  // 3. User typed a custom domain into browser while on SoftAP
+  String host = _server.hostHeader();
+  bool isForeignHost = (host.length() > 0 && host != "192.168.4.1" && 
+                        host != WiFi.softAPIP().toString() && 
+                        host != "smart-charger.local" && host != "smartcontroller.local");
+
+  if (isCaptiveProbe || (isForeignHost && (uri == "/" || uri == "/index.html"))) {
     _server.sendHeader("Access-Control-Allow-Origin", "*");
-    _server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+    _server.sendHeader("Location", "http://192.168.4.1/", true);
     _server.send(302, "text/plain", "Captive Portal Redirect");
     return;
   }
+
+  // 4. All other unrecognized requests return 404 Not Found (NEVER 302 to prevent infinite parallel reload storms!)
   _server.sendHeader("Access-Control-Allow-Origin", "*");
   _server.send(404, "text/plain", "Not Found");
 }
