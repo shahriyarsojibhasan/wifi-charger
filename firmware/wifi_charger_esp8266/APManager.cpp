@@ -30,8 +30,8 @@ void APManager::begin(int channel) {
   if (channel < 1 || channel > 13) channel = 1;
   _channel = channel;
 
-  // 1. Radio Mode: Pure WIFI_AP in Setup mode (no routing conflicts) or WIFI_AP_STA when fallback
-  WiFi.mode(isSetup ? WIFI_AP : WIFI_AP_STA);
+  // 1. Radio Mode: Always WIFI_AP_STA so the STA radio can scan and connect while SoftAP is active
+  WiFi.mode(WIFI_AP_STA);
   WiFi.setAutoReconnect(false); // CRITICAL: Stop SDK background scanning so SoftAP beacon never drops!
   WiFi.disconnect(false, false);
   delay(50);

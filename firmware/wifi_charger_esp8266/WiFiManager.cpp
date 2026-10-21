@@ -66,30 +66,27 @@ void WiFiManager::begin() {
       }
     }
 
-    // Attempt 1: BSSID-directed probe (fastest, works for hidden SSIDs)
-    if (hasBssid && cfg.wifiChannel >= 1 && cfg.wifiChannel <= 13) {
-      Serial.printf("[WiFiMgr] BSSID-directed probe ch%d BSSID=%s (hidden SSID OK)...\n",
-                    cfg.wifiChannel, cfg.wifiBssid);
-      WiFi.begin(cfg.wifiSsid, cfg.wifiPass, cfg.wifiChannel, bssid, true);
-    } else if (cfg.wifiChannel >= 1 && cfg.wifiChannel <= 13) {
+    // Channel-directed probe if channel known, otherwise full broadcast scan
+    if (cfg.wifiChannel >= 1 && cfg.wifiChannel <= 13) {
       Serial.printf("[WiFiMgr] Channel-directed probe ch%d for '%s'...\n",
                     cfg.wifiChannel, cfg.wifiSsid);
       WiFi.begin(cfg.wifiSsid, cfg.wifiPass, cfg.wifiChannel);
     } else {
+      Serial.printf("[WiFiMgr] Standard scan connect for '%s'...\n", cfg.wifiSsid);
       WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
     }
 
-    // Wait up to 5.5 seconds (if router is off, start fallback SoftAP quickly without WDT resets!)
+    // Wait up to 15 seconds (allows full scan + WPA2 handshake + DHCP lease)
     unsigned long start = millis();
     bool channelFallbackDone = false;
-    while (WiFi.status() != WL_CONNECTED && (millis() - start < 5500)) {
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
       delay(100);
       ESP.wdtFeed();
       yield();
-      // After 2.5s without connection on directed probe, try full broadcast scan
-      if (!channelFallbackDone && (millis() - start >= 2500)) {
+      // If channel-directed probe didn't connect after 6s, switch to full broadcast scan
+      if (!channelFallbackDone && cfg.wifiChannel > 0 && (millis() - start >= 6000)) {
         channelFallbackDone = true;
-        Serial.println(F("[WiFiMgr] Directed probe timed out. Full broadcast scan..."));
+        Serial.println(F("[WiFiMgr] Channel probe timed out after 6s. Full broadcast scan..."));
         WiFi.config(0U, 0U, 0U); // Release static IP before full scan
         WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
       }
@@ -147,13 +144,13 @@ void WiFiManager::begin() {
                     connectedCh, mcfg.wifiBssid);
     } else {
       // ── Boot connect timed out: start fallback SoftAP ────────────────────
-      Serial.println(F("[WiFiMgr] Boot connect timed out (>5.5s). Starting fallback SoftAP 'SMART-CHARGER-CONTROLLER'..."));
+      Serial.println(F("[WiFiMgr] Boot connect timed out (>15s). Starting fallback SoftAP 'SMART-CHARGER-CONTROLLER'..."));
       _lastAttemptTime = millis();
       _disconnectStartTime = millis();
       _failedAttempts = 0;
       _lastConnected = false;
       _probingRouter = false;
-      WiFi.disconnect(false);       // Immediately stop STA scanning!
+      WiFi.disconnect(false);       // Stop active scan attempt
       WiFi.setAutoReconnect(false); // Silence SDK auto-reconnect!
       WiFi.config(0U, 0U, 0U);      // Release any static IP config
       apMgr.begin(1);
@@ -165,8 +162,10 @@ void WiFiManager::begin() {
     _lastConnected = false;
     _disconnectStartTime = millis();
 
-    // 1. Scan Wi-Fi networks BEFORE launching SoftAP!
+    // 1. Prepare radio in AP+STA mode and scan Wi-Fi networks BEFORE launching SoftAP!
     // Since no client/phone is connected yet, this scan is 100% clean and causes zero drops.
+    WiFi.mode(WIFI_AP_STA);
+    delay(50);
     performScan(false);
 
     Serial.println(F("[WiFiMgr] Starting Setup SoftAP 'SMART CHARGER SETUP'..."));
@@ -458,19 +457,23 @@ void WiFiManager::resetCredentials() {
 }
 
 void WiFiManager::performScan(bool async) {
-  // If a phone is currently connected to SoftAP, DO NOT do an active RF channel hop!
-  // It would break the RF synthesizer lock and disconnect the phone.
-  if (apMgr.hasConnectedClients() || WiFi.softAPgetStationNum() > 0) {
-    Serial.println(F("[WiFiMgr] Phone actively connected to SoftAP! Skipping RF channel hop to protect connection. Serving cached scan."));
+  if (_scanRunning) return;
+
+  // If a phone is currently connected to SoftAP AND we already have cached networks:
+  // Serve the cache to protect the phone's connection from channel hopping.
+  if (_cachedScanResults.size() > 0 && (apMgr.hasConnectedClients() || WiFi.softAPgetStationNum() > 0)) {
+    Serial.printf("[WiFiMgr] Serving %d cached Wi-Fi scan results (client active).\n", (int)_cachedScanResults.size());
     return;
   }
 
-  Serial.println(F("[WiFiMgr] Performing clean background Wi-Fi scan (no clients connected)..."));
+  Serial.println(F("[WiFiMgr] Performing clean Wi-Fi scan..."));
   _scanRunning = true;
-  WiFi.enableSTA(true);
+  WiFi.mode(WIFI_AP_STA);
+  delay(30);
   int n = WiFi.scanNetworks(false, false);
-  _cachedScanResults.clear();
+  Serial.printf("[WiFiMgr] scanNetworks returned: %d\n", n);
   if (n > 0) {
+    _cachedScanResults.clear();
     for (int i = 0; i < n && _cachedScanResults.size() < 25; i++) {
       String s = WiFi.SSID(i);
       s.trim();

@@ -467,6 +467,8 @@ void HttpServer::handleStatus() {
   chunk += "\"formatted_time_12\":\""     + timeMgr.getFormattedTime12() + "\",";
   chunk += "\"relay_active_low\":"        + String(cfg.relayActiveLow ? "true" : "false") + ",";
   chunk += "\"relayActiveLow\":"         + String(cfg.relayActiveLow ? "true" : "false") + ",";
+  chunk += "\"wifi_ssid\":\""             + String(cfg.wifiSsid) + "\",";
+  chunk += "\"wifiSsid\":\""              + String(cfg.wifiSsid) + "\",";
   chunk += "\"device_id\":\""             + String(cfg.deviceId) + "\",";
   chunk += "\"deviceId\":\""              + String(cfg.deviceId) + "\"}";
   _server.sendContent(chunk);
@@ -910,14 +912,13 @@ void HttpServer::handleScanWifi() {
   _lastInteractionTime = millis();
   apMgr.markClientActivity();
 
-  // If scan cache is empty and NO phone is connected, we can scan:
-  if (wifiMgr.getScannedNetworkCount() == 0 && WiFi.softAPgetStationNum() == 0 && !apMgr.hasConnectedClients()) {
+  bool force = _server.hasArg("force") && (_server.arg("force") == "1" || _server.arg("force") == "true");
+
+  // If scan cache is empty or force is explicitly requested, perform a scan:
+  if (wifiMgr.getScannedNetworkCount() == 0 || force) {
     wifiMgr.performScan(false);
   }
 
-  // When a phone is connected, we NEVER perform an active channel sweep!
-  // Hopping channels would break the RF PLL lock and cause the phone to drop.
-  // Instead, we immediately serve the pre-cached scan results in 2ms!
   const auto& nets = wifiMgr.getScannedNetworks();
 
   _server.sendHeader("Access-Control-Allow-Origin", "*");
